@@ -1,2 +1,4 @@
 .venv/
 MS-ASL/
+SignEase/
+datasets/__pycache__/
