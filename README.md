@@ -2,6 +2,9 @@
 
 MS-ASL: https://www.microsoft.com/en-us/research/project/ms-asl/
 
+To load in the data into dataloaders, run the script
+* train_loader, val_loader, test_loader, label_to_idx = get_data_loaders(VIDEO_DIR, SPLIT_DIR, batch_size=BATCH_SIZE)
+
 # Project Setup & Quickstart (with `uv`)
 
 > This project uses [uv](https://docs.astral.sh/uv/) for Python packaging, virtualenvs, and dependency management.
