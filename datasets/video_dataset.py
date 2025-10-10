@@ -22,7 +22,7 @@ class VideoDataset(Dataset):
         pad_mode: str = "zero",
         return_mask: bool = False,
         labels: Optional[List[str]] = None,
-        frame_size: Optional[tuple[int, int]] = (480, 640),
+        frame_size: Optional[tuple[int, int]] = (224, 224),
         stride: int=1
     ):
         """Initialize VideoDataset.
@@ -143,7 +143,7 @@ class VideoDataset(Dataset):
         videos_dir: str,
         num_frames: Optional[int] = 16,
         transform: Optional[Callable] = None,
-        frame_size: Optional[tuple[int, int]] = (480, 640),
+        frame_size: Optional[tuple[int, int]] = (224, 224),
         stride: int=1,
         *,
         pad_mode: str = "zero",
