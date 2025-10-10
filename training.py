@@ -99,14 +99,16 @@ class Trainer():   # Class used for creating the model and training it
         print(f"The hyperparameters are {hyperparams} and will be stored at {self.save_model_path}config.yaml")
         with open(str(self.save_model_path) + "config.yaml", "w") as f: yaml.dump(hyperparams, f)
 
-    def save(self, train_loss, eval_loss, train_acc, eval_acc, eval_epochNum, prev_best_epoch):
+    def save(self, train_loss, eval_loss, train_acc, eval_acc, train_top5_acc, eval_top5_acc, eval_epochNum, prev_best_epoch):
         """Makes plots for the the losses and accuracies
 
         Args:
-            train_loss (float): The training loss at the last epoch
-            eval_loss (float): The evaluation loss at the last epoch
-            train_acc (float): The training accuracy at the last epoch
-            eval_acc (float): The evaluation accuracy at the last epoch
+            train_loss (float): The training losses
+            eval_loss (float): The evaluation losses
+            train_acc (float): The training accuracies
+            eval_acc (float): The evaluation accuracies
+            train_acc_top5 (float): The top5 training accuracies
+            eval_acc_top5 (float): The top5 evaluation accuracies
             eval_epochNum (list): A list of each epoch used in evaluation
             prev_best_epoch (int): The previous best epoch number
             
@@ -129,26 +131,33 @@ class Trainer():   # Class used for creating the model and training it
             """Make the plots"""
             # Loss plot
             makePlot(range(1, len(train_loss)+1), train_loss, eval_epochNum, eval_loss, title="Loss Plot", label="Mean Loss",
-                    fileName="lossPlot" + ".png")
-            # Accuracy plot
+                    fileName="loss" + ".png")
+            # Accuracy plots
             makePlot(range(1, len(train_acc)+1), train_acc, eval_epochNum, eval_acc, title="Accuracy Plot",
-                    label="Mean Accuracy", fileName="accPlot" + ".png")
+                    label="Mean Accuracy", fileName="acc" + ".png")
+            makePlot(range(1, len(train_acc)+1), train_top5_acc, eval_epochNum, eval_top5_acc, title="Accuracy Plot",
+                    label="Mean Top5 Accuracy", fileName="acc_top5" + ".png")
         
         # Save the weights if we have the new best model (on validation first, then training if there is a tie)
         prev_best_val = eval_acc[prev_best_epoch] if prev_best_epoch is not None else 0.
+        prev_best_val_top5 = eval_top5_acc[prev_best_epoch] if prev_best_epoch is not None else 0.
         prev_best_train = train_acc[prev_best_epoch] if prev_best_epoch is not None else 0.
         if prev_best_epoch is None: 
             torch.save(self.model.state_dict(), str(self.save_model_path + "best" + ".pt"))
             best_epoch = len(eval_acc) - 1
-            print(f"New best model saved at epoch {best_epoch+1} with validation accuracy {eval_acc[-1]} and training accuracy {train_acc[-1]}")
+            print(f"New best model saved at epoch {best_epoch+1} with validation accuracies {eval_acc[-1]}-{eval_top5_acc[-1]} and training accuracies {train_acc[-1]}-{train_top5_acc[-1]}")
         elif eval_acc[-1] > prev_best_val: 
             torch.save(self.model.state_dict(), str(self.save_model_path + "best" + ".pt"))
             best_epoch = len(eval_acc) - 1
-            print(f"New best model saved at epoch {best_epoch+1} with validation accuracy {eval_acc[-1]} and training accuracy {train_acc[-1]}")
-        elif eval_acc[-1]==prev_best_val and train_acc[-1]>prev_best_train: 
+            print(f"New best model saved at epoch {best_epoch+1} with validation accuracies {eval_acc[-1]}-{eval_top5_acc[-1]} and training accuracies {train_acc[-1]}-{train_top5_acc[-1]}")
+        elif eval_acc[-1]==prev_best_val and eval_top5_acc[-1]>prev_best_val_top5: 
             torch.save(self.model.state_dict(), str(self.save_model_path + "best" + ".pt"))
             best_epoch = len(eval_acc) - 1
-            print(f"New best model saved at epoch {best_epoch+1} with validation accuracy {eval_acc[-1]} and training accuracy {train_acc[-1]}")
+            print(f"New best model saved at epoch {best_epoch+1} with validation accuracies {eval_acc[-1]}-{eval_top5_acc[-1]} and training accuracies {train_acc[-1]}-{train_top5_acc[-1]}")
+        elif eval_acc[-1]==prev_best_val and eval_top5_acc[-1]==prev_best_val_top5 and train_acc[-1]>prev_best_train: 
+            torch.save(self.model.state_dict(), str(self.save_model_path + "best" + ".pt"))
+            best_epoch = len(eval_acc) - 1
+            print(f"New best model saved at epoch {best_epoch+1} with validation accuracies {eval_acc[-1]}-{eval_top5_acc[-1]} and training accuracies {train_acc[-1]}-{train_top5_acc[-1]}")
         else: best_epoch = prev_best_epoch
         
         return best_epoch
@@ -168,7 +177,7 @@ class Trainer():   # Class used for creating the model and training it
             pred_arr (tensor 1-D): The predictions (OFFENSE=1 or DEFENSE=0) for each team
             label_arr (tensor 1-D): The true labels (OFFENSE=1 or DEFENSE=0) for each team
         """
-        num_correct, total = 0, 0
+        num_correct, num_top5_correct, total = 0, 0, 0
         losses =[]
         self.model.eval()
         
@@ -192,11 +201,16 @@ class Trainer():   # Class used for creating the model and training it
                 predictions = torch.argmax(logits, dim=1)  
                 correct = (predictions == labels)
                 num_correct += correct.sum().item()
+
+                # Top-5 accuracy
+                top5_preds = torch.topk(logits, k=5, dim=1).indices
+                top5_correct = top5_preds.eq(labels.unsqueeze(1))
+                num_top5_correct += top5_correct.any(dim=1).sum().item()
                 total += labels.size(0)
         
         loss_val = np.mean(losses)
         
-        return loss_val, num_correct, total
+        return loss_val, num_correct, num_top5_correct, total
 
     def train_helper(self):
         """Trains the model on the training set for an entire epoch
@@ -206,7 +220,7 @@ class Trainer():   # Class used for creating the model and training it
             num_correct (int): The number of teams labelled correctly
             total (int): The number of total teams
         """
-        num_correct, total = 0, 0
+        num_correct, num_top5_correct, total = 0, 0, 0
         losses = []
         self.model.train()
         
@@ -229,12 +243,19 @@ class Trainer():   # Class used for creating the model and training it
             self.optimizer.step()
             
             with torch.no_grad():  # TODO: Get accuracy (and store it in num_correct and total)
+                # Accuracy
                 predictions = torch.argmax(logits, dim=1)  
                 correct = (predictions == labels)
                 num_correct += correct.sum().item()
+
+                # Top-5 accuracy
+                top5_preds = torch.topk(logits, k=5, dim=1).indices
+                top5_correct = top5_preds.eq(labels.unsqueeze(1))
+                num_top5_correct += top5_correct.any(dim=1).sum().item()
+
                 total += labels.size(0)
                 
-        return np.mean(losses), num_correct, total
+        return np.mean(losses), num_correct, num_top5_correct, total
 
     def fit(self):
         """Train the entire model for a specified number of epochs
@@ -243,27 +264,31 @@ class Trainer():   # Class used for creating the model and training it
             eval_acc (list): The evaluation accuracies at each evaluation step
         """
         best_epoch = None
-        train_loss, train_acc = [], []
-        eval_loss, eval_acc = [], []
+        train_loss, train_acc, train_top5_acc = [], [], []
+        eval_loss, eval_acc, eval_top5_acc = [], [], []
         evaluation_epochNum = []
         self.progress = tqdm(total=self.epochs, desc='Training', position=0, unit="epochs")
         
         for i in range(1, self.epochs + 1):
 
-            t_loss, t_num_correct, t_total = self.train_helper()
+            t_loss, t_num_correct, t_num_correct_top5, t_total = self.train_helper()
             t_acc = (t_num_correct / t_total)*100
+            t_acc_top5 = (t_num_correct_top5 / t_total)*100
             train_loss.append(t_loss)
             train_acc.append(t_acc)
+            train_top5_acc.append(t_acc_top5)
 
-            e_loss, e_num_correct, e_total = self.eval_helper()
+            e_loss, e_num_correct, e_num_correct_top5, e_total = self.eval_helper()
             e_acc = (e_num_correct / e_total)*100
-            self.progress.set_description(f'Epoch {i}/{self.epochs} | Train Loss: {t_loss:.4f} | Val Loss: {e_loss:.4f} | Train Accuracy: {t_acc:.4f} ({int(t_num_correct/2)}/{int(t_total/2)}) | Val Accuracy: {e_acc:.4f} ({int(e_num_correct/2)}/{int(e_total/2)})')
+            e_acc_top5 = (e_num_correct_top5 / e_total)*100
+            self.progress.set_description(f'Epoch {i}/{self.epochs} | Train Loss: {t_loss:.4f} | Val Loss: {e_loss:.4f} | Train Acc: {t_acc:.4f} ({int(t_num_correct/2)}/{int(t_total/2)}) | Val Acc: {e_acc:.4f} ({int(e_num_correct/2)}/{int(e_total/2)}) | Train Top5_Acc: {t_acc:.4f} ({int(t_num_correct_top5/2)}/{int(t_total/2)}) | Val Top5_Acc: {e_acc:.4f} ({int(e_num_correct_top5/2)}/{int(e_total/2)})')
             self.progress.update(1)
             
             eval_loss.append(e_loss)
             eval_acc.append(e_acc)
+            eval_top5_acc.append(e_acc_top5)
             evaluation_epochNum.append(i)
-            best_epoch = self.save(train_loss, eval_loss, train_acc, eval_acc, evaluation_epochNum, best_epoch)
+            best_epoch = self.save(train_loss, eval_loss, train_acc, eval_acc, train_top5_acc, eval_top5_acc, evaluation_epochNum, best_epoch)
         
         return eval_acc
 

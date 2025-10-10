@@ -145,9 +145,9 @@ def get_data_loaders(
 
     if debugging:
         # use small subsets for debugging
-        train_ds = torch.utils.data.Subset(train_ds, list(range(min(64, len(train_ds)))))
-        val_ds = torch.utils.data.Subset(val_ds, list(range(min(64, len(val_ds)))))
-        test_ds = torch.utils.data.Subset(test_ds, list(range(min(64, len(test_ds)))))
+        train_ds = torch.utils.data.Subset(train_ds, list(range(min(20, len(train_ds)))))
+        val_ds = torch.utils.data.Subset(val_ds, list(range(min(20, len(val_ds)))))
+        test_ds = torch.utils.data.Subset(test_ds, list(range(min(20, len(test_ds)))))
 
     collate = functools.partial(collate_batch, label_to_idx=label_to_idx)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=collate)
