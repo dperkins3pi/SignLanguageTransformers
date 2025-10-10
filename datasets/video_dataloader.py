@@ -3,6 +3,7 @@ import os
 from typing import Optional
 import torch
 from torch.utils.data import DataLoader
+from .video_dataset import VideoDataset
 
 
 def collate_batch(batch, label_to_idx=None):
@@ -104,25 +105,24 @@ def get_data_loaders(
     videos_dir: str,
     splits_dir: str,
     batch_size: int = 8,
+    stride: int=1,
     num_workers: int = 4,
     num_frames: Optional[int] = None,
     pad_mode: str = "repeat",
     return_mask: bool = True,
-    debugging: bool = False,
+    debugging: bool = False
 ):
     """Helper to construct train/val/test VideoDatasets and DataLoaders.
 
     Returns: (train_loader, val_loader, test_loader, label_to_idx)
     """
-    from .video_dataset import VideoDataset
-
     train_csv = os.path.join(splits_dir, "train.csv")
     val_csv = os.path.join(splits_dir, "val.csv")
     test_csv = os.path.join(splits_dir, "test.csv")
 
-    train_ds = VideoDataset.from_split_csv(train_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode)
-    val_ds = VideoDataset.from_split_csv(val_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode)
-    test_ds = VideoDataset.from_split_csv(test_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode)
+    train_ds = VideoDataset.from_split_csv(train_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
+    val_ds = VideoDataset.from_split_csv(val_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
+    test_ds = VideoDataset.from_split_csv(test_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
 
     # build label->idx
     label_to_idx = None

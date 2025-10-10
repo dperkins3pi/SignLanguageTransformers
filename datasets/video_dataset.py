@@ -23,6 +23,7 @@ class VideoDataset(Dataset):
         return_mask: bool = False,
         labels: Optional[List[str]] = None,
         frame_size: Optional[tuple[int, int]] = (480, 640),
+        stride: int=1
     ):
         """Initialize VideoDataset.
 
@@ -45,6 +46,7 @@ class VideoDataset(Dataset):
         self.labels = labels
         # frame_size is (H, W) to which frames will be resized using cv2.resize
         self.frame_size = frame_size
+        self.stride = stride
 
     def __len__(self):
         return len(self.files)
@@ -54,11 +56,10 @@ class VideoDataset(Dataset):
         if not cap.isOpened(): raise RuntimeError(f"Could not open video: {path}")
 
         frames = []
-        while True:
+        for frame_idx in range(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), self.stride):  # Only keep every few frames (for computational efficiency)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
-            if not ret:
-                break
-            # BGR -> RGB
+            if not ret: break
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame)
         cap.release()
@@ -143,6 +144,7 @@ class VideoDataset(Dataset):
         num_frames: Optional[int] = 16,
         transform: Optional[Callable] = None,
         frame_size: Optional[tuple[int, int]] = (480, 640),
+        stride: int=1,
         *,
         pad_mode: str = "zero",
         return_mask: bool = False,
@@ -194,9 +196,9 @@ class VideoDataset(Dataset):
             if missing:
                 for f in missing:
                     print(f"Warning: file has no label (empty Gloss) in CSV: {f}")
-            return cls(existing_files, num_frames, transform, pad_mode=pad_mode, return_mask=return_mask, labels=existing_labels, frame_size=frame_size)
+            return cls(existing_files, num_frames, transform, pad_mode=pad_mode, return_mask=return_mask, labels=existing_labels, frame_size=frame_size, stride=stride)
         # if labels were provided but didn't align, warn about files with no label
         if labels and len(existing_labels) != len(existing_files):
             print("Warning: Some files referenced in CSV were missing on disk; labels may not align exactly.")
-        return cls(existing_files, num_frames, transform, pad_mode=pad_mode, return_mask=return_mask, frame_size=frame_size)
+        return cls(existing_files, num_frames, transform, pad_mode=pad_mode, return_mask=return_mask, frame_size=frame_size, stride=stride)
 

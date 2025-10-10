@@ -8,8 +8,6 @@ import numpy as np
 import mediapipe as mp
 from matplotlib import pyplot as plt
 from tqdm import tqdm
-from sklearn.metrics import accuracy_score
-from torch.utils.data import DataLoader
 from datasets.video_dataloader import get_data_loaders
 
 
@@ -18,6 +16,7 @@ VIDEO_DIR = DATA_DIR + '/videos'
 SPLIT_DIR = DATA_DIR + '/splits'
 RESULTS_DIR = 'results'   # Place to store the results
 
+STRIDE = 2   # Look at every STRIDE frames (rather than all of them, for computational efficiency)
 EPOCHS = 100
 LEARNING_RATE = 0.001
 BATCH_SIZE = 8
@@ -184,6 +183,7 @@ class Trainer():   # Class used for creating the model and training it
         with torch.inference_mode():
             for batch in self.val_dataloader:
                 videos, filenames, mask, labels = batch   # Load in the data
+                print(videos.shape)
 
                 # Move everything to the right device
                 videos = videos.to(self.device)
@@ -226,6 +226,7 @@ class Trainer():   # Class used for creating the model and training it
         
         for batch in self.train_dataloader:
             videos, filenames, mask, labels = batch   # Load in the data
+            print(videos.shape)
             
             # Move everything to the right device
             videos = videos.to(self.device)
@@ -304,7 +305,7 @@ if __name__ == '__main__':
 
     # Build datasets and loaders using helper in datasets.video_dataset
     print('Loading datasets')
-    train_loader, val_loader, test_loader, label_to_idx = get_data_loaders(VIDEO_DIR, SPLIT_DIR, batch_size=BATCH_SIZE, debugging=debugging)
+    train_loader, val_loader, test_loader, label_to_idx = get_data_loaders(VIDEO_DIR, SPLIT_DIR, batch_size=BATCH_SIZE, stride=STRIDE, debugging=debugging)
     print('Train / Val / Test sizes:', len(train_loader.dataset), len(val_loader.dataset), len(test_loader.dataset))
 
     # Create and fit the model
