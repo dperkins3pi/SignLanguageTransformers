@@ -62,7 +62,7 @@ with open(MODEL_PATH, 'wb') as f:
             video_paths (list[str]): a list of filepaths to videos
 
         Returns:
-            list[list[HandLandmarkerResult]]: a list of lists of HandLandmarkerResults where each list[HandLandmarkerResults corresponds to a given video]
+            list[list[list[list[(str,float,float,float)]]]]: a list of the hand_landmarks for each hand(can be zero) for each frame for each video
         """
         results = []
         for vid_path in video_paths:
@@ -70,13 +70,13 @@ with open(MODEL_PATH, 'wb') as f:
         return results
 
     def get_joints(vid_path):
-        """gets the HandLandmarkerResults of an individual video 
+        """gets the hand_landmarks of an individual video 
 
         Args:
-            vid_path (str): path to the video to get the HandLandmarkerResults from 
+            vid_path (str): path to the video to get the hand_landmarks from 
 
         Returns:
-            list[HandLandmarkerResults]: a list of the HandLandmarkerResults for each video frame. 
+            list[list[list[str,float,float,float]]]]: a list of the hand_landmarks for each hand(can be zero) for each frame
         """
         base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
         options = vision.HandLandmarkerOptions(running_mode=vision.RunningMode.VIDEO, base_options=base_options, num_hands=2) #Currently will detect a max of 2 hands.
@@ -98,6 +98,33 @@ with open(MODEL_PATH, 'wb') as f:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_frame = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
             time_stamp = frame_per_ms * frame_num
-            results.append(detector.detect_from_video(mp_frame, time_stamp))
+            result = detector.detect_from_video(mp_frame, time_stamp)
+            hands = []
+            for h in result.hand_landmarks:
+                points = []
+                points.append(("WRIST", h[0].x, h[0].y, h[0].z))
+                points.append(("THUM_CMC", h[1].x, h[1].y, h[1].z))
+                points.append(("THUMB_MCP", h[2].x, h[2].y, h[2].z))
+                points.append(("THUMB_IP", h[3].x, h[3].y, h[3].z))
+                points.append(("THUMB_TIP", h[4].x, h[4].y, h[4].z))
+                points.append(("INDEX_FINGER_MCP", h[5].x, h[5].y, h[5].z))
+                points.append(("INDEX_FINGER_PIP", h[6].x, h[6].y, h[6].z))
+                points.append(("INDEX_FINGER_DIP", h[7].x, h[7].y, h[7].z)) 
+                points.append(("INDEX_FINGER_TIP", h[8].x, h[8].y, h[8].z))
+                points.append(("MIDDLE_FINGER_MCP", h[9].x, h[9].y, h[9].z))
+                points.append(("MIDDLE_FINGER_PIP", h[10].x, h[10].y, h[10].z))
+                points.append(("MIDDLE_FINGER_DIP", h[11].x, h[11].y, h[11].z))
+                points.append(("MIDDLE_FINGER_TIP", h[12].x, h[12].y, h[12].z))
+                points.append(("RING_FINGER_MCP", h[13].x, h[13].y, h[13].z))
+                points.append(("RING_FINGER_PIP", h[14].x, h[14].y, h[14].z))
+                points.append(("RING_FINGER_DIP", h[15].x, h[15].y, h[15].z))
+                points.append(("RING_FINGER_TIP", h[16].x, h[16].y, h[16].z))
+                points.append(("PINKY_MCP", h[17].x, h[17].y, h[17].z))
+                points.append(("PINKY_PIP", h[18].x, h[18].y, h[18].z))
+                points.append(("PINKY_DIP", h[19].x, h[19].y, h[19].z))
+                points.append(("PINKY_TIP", h[20].x, h[20].y, h[20].z))
+                hands.append(points)
+            results.append(hands)
         cap.release()
         return results
+    
