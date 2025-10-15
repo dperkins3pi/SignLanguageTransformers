@@ -8,22 +8,44 @@ SHOW_COLORED_JOINTS = True
 
 # --- Face Mesh Keypoint Selection ---
 RELEVANT_FACE_LANDMARKS = [
-    # Mouth/Lips (26 points)
-    13, 14, 61, 78, 80, 81, 82, 84, 91, 146, 178, 181, 185, 191,
-    291, 308, 310, 311, 312, 314, 317, 324, 375, 402, 405, 415,
-    # Right Eye/Lids (10 points)
-    33, 7, 163, 144, 145, 153, 154, 155, 133, 246,
-    # Left Eye/Lids (10 points)
-    263, 249, 390, 373, 374, 380, 381, 382, 362, 466,
-    # Right Eyebrow (8 points)
-    52, 53, 55, 63, 65, 66, 70, 105,
-    # Left Eyebrow (8 points)
-    282, 283, 285, 293, 295, 296, 300, 334,
-    # Nose/Forehead (Stabilization/Context) (5 points)
-    1, 6, 168, 197, 4,
-    # Cheek/Contour (Stabilization/Context) (6 points)
-    10, 151, 338, 379, 130, 359
+    # --- Mouth/Lips (Minimal 18 points for shape, corner, and center dynamics) ---
+    13, 14, # Outer Lips (Top/Bottom Center)
+    61, 291, # Inner Lips (Top/Bottom Center)
+    78, 308, # Outer Lips (Left/Right Center)
+    82, 312, # Inner Lips (Left/Right Center)
+    84, 314, # Left/Right Corner
+    178, 402, # Top Lip Contour (Upper)
+    81, 311, # Bottom Lip Contour (Lower)
+    91, 324, # Upper Lip (Inner Edge)
+    185, 415, # Lower Lip (Inner Edge)
+
+    # --- Eyes/Lids (Minimal 8 points: Corners, Centers, and Eyelid dynamics) ---
+    # Right Eye (4 points)
+    33, 133,  # Inner/Outer Corner
+    144, 153, # Upper/Lower Lid Center
+    # Left Eye (4 points)
+    263, 362, # Inner/Outer Corner
+    373, 382, # Upper/Lower Lid Center
+
+    # --- Eyebrows
+    # Right Eyebrow (3 points)
+    52,  # Inner Edge (Near Glabella)
+    55,  # Center/Arch Peak
+    105,  # Outer Edge
+    # Left Eyebrow (3 points)
+    282,  # Inner Edge (Near Glabella)
+    285,  # Center/Arch Peak
+    334,  # Outer Edge
+
+    # --- Stabilization/Context (Minimal 5 points: Face/Head orientation) ---
+    1, # Nose Tip (Primary stabilization)
+    6, # Nose Base
+    4, # Chin (Vertical reference)
+    10, # Right Cheek (Lateral reference)
+    338 # Left Cheek (Lateral reference)
 ]
+
+# Total landmarks reduced from 73 to 35.
 NUM_FACE_LANDMARKS = len(RELEVANT_FACE_LANDMARKS)
 
 # Initialize MediaPipe solutions
