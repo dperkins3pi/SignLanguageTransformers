@@ -12,37 +12,43 @@ def collate_batch(batch, label_to_idx=None):
     This is provided here so DataLoader workers can pickle and import it from
     the `datasets.collate` module. See training.py for expected usage.
     """
-    tensors = []
-    filenames = []
-    masks_in = []
-    labels_in = []
+    all_frames = []
+    all_segmented_frames = []
+    all_joints = []
+    all_filenames = []
+    all_labels = []
+    lengths = []
 
+    # Read in the batch
+    _, H, W = batch[0][0].shape
+    _, D = batch[0][2].shape
     for item in batch:
-        if len(item) == 2:
-            t, fn = item
-            tensors.append(t)
-            filenames.append(fn)
-            masks_in.append(None)
-            labels_in.append(None)
-        elif len(item) == 3:
-            t, fn, third = item
-            tensors.append(t)
-            filenames.append(fn)
-            # disambiguate: assume string => label, else mask
-            if isinstance(third, str):
-                masks_in.append(None)
-                labels_in.append(third)
-            else:
-                masks_in.append(third)
-                labels_in.append(None)
-        elif len(item) == 4:
-            t, fn, m, lab = item
-            tensors.append(t)
-            filenames.append(fn)
-            masks_in.append(m)
-            labels_in.append(lab)
-        else:
-            raise RuntimeError("Unexpected item format from dataset")
+        frames, segmented_frames, joints, filename, label = item
+        all_frames.append(frames)
+        all_segmented_frames.append(segmented_frames)
+        all_joints.append(joints)
+        all_filenames.append(filename)
+        all_labels.append(label)
+        lengths.append(frames.shape[0])
+    max_length = max(lengths)
+
+    masks = torch.zeros((len(all_frames), max_length))
+    for i in range(len(all_frames)):
+        num_missing_frames = max_length - lengths[i]
+
+        # Pad the frames
+        padding = torch.zeros((num_missing_frames, H, W))
+        all_frames[i] = torch.cat([all_frames[i], padding], dim=0)
+        all_segmented_frames[i] = torch.cat([all_segmented_frames[i], padding], dim=0)
+        all_joints[i] = torch.cat([all_joints[i], torch.zeros((num_missing_frames, D))], dim=0)
+        masks[i,:lengths[i]] = 1
+
+    # Map labels to indices
+    all_labels = torch.tensor([label_to_idx[l] if l is not None else -1 for l in all_labels], dtype=torch.long)
+    return all_filenames, torch.stack(all_frames).float(), torch.stack(all_segmented_frames).float(), torch.stack(all_joints).float(), masks, all_labels
+
+
+    assert 1==0
 
     # convert tensors to torch.Tensor if needed and collect temporal lengths
     ts = []
@@ -104,6 +110,8 @@ def collate_batch(batch, label_to_idx=None):
 def get_data_loaders(
     videos_dir: str,
     splits_dir: str,
+    segmented_dir: str, 
+    joint_dir: str,
     batch_size: int = 8,
     stride: int=1,
     num_workers: int = 4,
@@ -120,9 +128,9 @@ def get_data_loaders(
     val_csv = os.path.join(splits_dir, "val.csv")
     test_csv = os.path.join(splits_dir, "test.csv")
 
-    train_ds = VideoDataset.from_split_csv(train_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
-    val_ds = VideoDataset.from_split_csv(val_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
-    test_ds = VideoDataset.from_split_csv(test_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
+    train_ds = VideoDataset.from_split_csv(train_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
+    val_ds = VideoDataset.from_split_csv(val_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
+    test_ds = VideoDataset.from_split_csv(test_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
 
     # build label->idx
     label_to_idx = None

@@ -1,4 +1,5 @@
 import os
+import time
 import yaml
 import torch
 import torch
@@ -6,87 +7,109 @@ import torch.nn as nn
 import numpy as np
 from matplotlib import pyplot as plt
 from tqdm import tqdm
+import torchvision.models as models
 from transformers import ViTModel, ViTConfig, ViTMSNModel
+from torchvision.models.feature_extraction import create_feature_extractor
 from datasets.video_dataloader import get_data_loaders
 
 
 DATA_DIR = 'SignEase/ASL_Citizen'   # Replace with your data directory
 VIDEO_DIR = DATA_DIR + '/videos'
 SPLIT_DIR = DATA_DIR + '/splits'
+SEGMENTED_DIR = DATA_DIR + '/segmented-videos'
+JOINT_DIR = DATA_DIR + '/joint_data'
 RESULTS_DIR = 'results'   # Place to store the results
 
-STRIDE = 3   # Look at every STRIDE frames (rather than all of them, for computational efficiency)
-USE_KEYPOINTS = False
+STRIDE = 2   # Look at every STRIDE frames (rather than all of them, for computational efficiency)
 EPOCHS = 100
 LEARNING_RATE = 0.001
 BATCH_SIZE = 8
 OPTIMIZER = "AdamW"
 WEIGHT_DECAY = 0.001
+VISION_MODEL = "ResNet18"
 
 
 class TransformerKeyPointModel(nn.Module):
-    def __init__(self, num_classes=10, num_frames=54, keypoint_dim=42, use_keypoints=True):
+    def __init__(self, num_classes=10, num_frames=54, keypoint_dim=237, nhead=8, vision_model=VISION_MODEL):
         super().__init__()
-        self.use_keypoints = use_keypoints
 
-        # Vision Transformer backbone (shared weights for all frames)
-        self.vit = ViTMSNModel.from_pretrained("facebook/vit-msn-small")   # TODO: Load in a bigger ViT
-        vit_feat_dim = self.vit.config.hidden_size
-        
-        # Temporal Transformer (acts on frame features)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=vit_feat_dim,
-            nhead=4,
-            batch_first=True  # (B, T, F)
-        )
-        self.temporal_transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        if "resnet" in vision_model.lower():
+            # Load pretrained ResNet (e.g., ResNet18)
+            if "18" in vision_model.lower(): resnet = models.resnet18(pretrained=True)
+            elif "34" in vision_model.lower(): resnet = models.resnet34(pretrained=True)
+            elif "50" in vision_model.lower(): resnet = models.resnet50(pretrained=True)
+            # Create a new Conv2d for grayscale input (instead of 3D)
+            rgb_weights = resnet.conv1.weight.data  # shape: (64, 3, 7, 7)
+            new_conv1 = nn.Conv2d(in_channels=1, out_channels=64, kernel_size=7, stride=2, padding=3, bias=False)
+            new_conv1.weight.data = rgb_weights.mean(dim=1, keepdim=True) # Average the weights across the RGB channels (axis=1)
+            resnet.conv1 = new_conv1   # Replace the first conv layer in the model
+            self.vision_model = create_feature_extractor(resnet, return_nodes={'avgpool': 'features'})
+            if "18" in vision_model.lower() or "34" in vision_model.lower(): self.feature_dim = 512
+            elif "50" in vision_model.lower() or "101" in vision_model.lower() or "152" in vision_model.lower(): self.feature_dim = 2048
+        else:
+            pass
+            # Vision Transformer backbone (shared weights for all frames)
+            # self.vit = ViTMSNModel.from_pretrained("facebook/vit-msn-small")   # TODO: Load in a bigger ViT
+
+        # Joint model
+        self.keypoint_dim = keypoint_dim
+        self.attn = nn.MultiheadAttention(embed_dim=3, num_heads=1, batch_first=True)
+        self.joint_model = nn.Sequential(nn.Linear(keypoint_dim, self.feature_dim), nn.GELU())
+
+        # Transformer on the combined features
+        self.temporal_transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=self.feature_dim*3, nhead=nhead, batch_first=True),num_layers=2)
 
         # Head for classification
-        self.head = nn.Linear(vit_feat_dim, num_classes)
+        self.head = nn.Sequential(nn.Linear(self.feature_dim*3, num_classes*2), nn.GELU(), nn.Linear(num_classes*2, num_classes))
 
-    def forward(self, x, keypoints=None, mask=None):    # TODO: Make this work with keypoints;  TODO: Parameter testing (only small values in ViT work for local computer)
+    def forward(self, videos, segmented_videos, joints, mask=None):    # TODO: Make this work with keypoints;  TODO: Parameter testing (only small values in ViT work for local computer)
         """
         x: (B, C, T, H, W)
         keypoints: (B, T, keypoint_dim)
         mask: (B, T)
         """
-        if keypoints is None and self.use_keypoints: raise ValueError("No keypoints passed in")
+        # Extract the dimensions
+        B, T, H, W = videos.shape
+        _, _, D = joints.shape
 
-        B, C, T, H, W = x.shape
-        x = x.permute(0, 2, 1, 3, 4)  # Permute to (B, T, C, H, W)
-
-        vit_features = []
+        # Pass in the gray scale video through the vision model
+        video_features = []
         for t in range(T):   # Apply ViT to each   # TODO: Could remove for loop by stacking batch and temporal dimension; but this requires more memory
-            frame = x[:, t]  # (B, C, H, W)
-            outputs = self.vit(frame)  # outputs.last_hidden_state shape (B, num_patches+1, D)
-            vit_feat = outputs.last_hidden_state[:, 0, :]  # (B, D)
-            vit_features.append(vit_feat)
-        vit_features = torch.stack(vit_features, dim=1)  # (B, T, D)
+            frame = videos[:, t].unsqueeze(1)  # (B, 1, H, W)
+            features = self.vision_model(frame)['features'].flatten(1)  # Batch x feature_dim
+            video_features.append(features)
+        video_features = torch.stack(video_features, dim=1)  # (B, T, feature_dim)
 
-        # Optionally concatenate keypoints
-        if self.use_keypoints and keypoints is not None:
-            # Make sure keypoints shape: (B, T, keypoint_dim)
-            vit_features = torch.cat([vit_features, keypoints], dim=-1)  # (B, T, D + keypoint_dim)
+        # Pass in the segmented video through the vision model
+        segmented_features = []
+        for t in range(T):   # Apply ViT to each   # TODO: Could remove for loop by stacking batch and temporal dimension; but this requires more memory
+            frame = segmented_videos[:, t].unsqueeze(1)  # (B, 1, H, W)
+            features = self.vision_model(frame)['features'].flatten(1)  # Batch x feature_dim
+            segmented_features.append(features)
+        segmented_features = torch.stack(segmented_features, dim=1)  # (B, T, feature_dim)
 
-        # Pass through the temporal transformer
-        temp_features = self.temporal_transformer(vit_features)  # (B, T, F)
+        # Pass in joint features through a transformer
+        joint_features = []
+        for t in range(T):   # Apply ViT to each   # TODO: Could remove for loop by stacking batch and temporal dimension; but this requires more memory
+            coordinates = joints[:, t].view(B, 79, 3)  # (B, 79, 3) as there are x,y,z coordinates for each joint
+            attn_out, _ = self.attn(coordinates, coordinates, coordinates)  # outputs shape: (batch_size, seq_len, keypoint_dim)
+            features = self.joint_model(attn_out.reshape(B,self.keypoint_dim))
+            joint_features.append(features)
+        joint_features = torch.stack(joint_features, dim=1)  # (B, T, feature_dim)
 
-        # Optionally apply mask (if provided) before pooling - mask invalid time steps
-        if mask is not None:
-            # mask: (B, T), True=valid, False=masked
-            mask_expanded = mask.unsqueeze(-1).float()  # (B, T, 1)
-            temp_features = temp_features * mask_expanded
-            pooled = temp_features.sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1e-5)  # (B, F)
-        else: pooled = temp_features.mean(dim=1)  # (B, F)
+        # Concatenate features, pass through temporal transformer, and then linear layers
+        all_features = torch.cat([video_features, segmented_features, joint_features], dim=2)  # Shape: (batch_size, time, 1536)
+        out = self.temporal_transformer(all_features)
+        pooled = out.mean(dim=1)
+        logits = self.head(pooled)
 
-        logits = self.head(pooled)  # (B, num_classes)
         return logits
 
     
 
 class Trainer():   # Class used for creating the model and training it
     def __init__(self, train_loader, val_loader, test_loader, label_to_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LEARNING_RATE, optimizer=OPTIMIZER, weight_decay=WEIGHT_DECAY, \
-        results_dir=RESULTS_DIR, save_output=True, stride=None, use_keypoints=USE_KEYPOINTS):
+        results_dir=RESULTS_DIR, save_output=True, stride=None):
         """Load in the data, create the model, and make directories to store future plots
         
         Args:
@@ -102,20 +125,18 @@ class Trainer():   # Class used for creating the model and training it
             results_dir (str): The file path where the results will be stored
             save_output (bool): Whether or not to output the plots. Defaults to True.
             stride (int): The stride of the model (only used to store in the yaml file)
-            use_keypoints (bool): Whether or not to use the keypoints
         """
         # Load in the data
         self.train_dataloader, self.val_dataloader, self.test_loader = train_loader, val_loader, test_loader
         self.label_to_idx = label_to_idx
-        self.stride, self.use_keypoints = stride, use_keypoints
+        self.stride = stride
         # Store hyperparameters
         self.epochs, self.batchsize, self.lr, self.weight_decay = epochs, batch_size, lr, weight_decay
         self.loss_fn = nn.CrossEntropyLoss()   # TODO: Change loss function if needed
         if torch.cuda.is_available(): self.device = torch.device("cuda")
         elif torch.backends.mps.is_available(): self.device = torch.device("mps")
         else: self.device = torch.device("cpu")
-        # self.model = TinyModel(in_channels=3, num_frames=16, num_classes=max(2, len(label_to_idx) if label_to_idx else 2)).to(self.device)
-        self.model = TransformerKeyPointModel(num_frames=16, num_classes=max(2, len(label_to_idx) if label_to_idx else 2), use_keypoints=self.use_keypoints).to(self.device)
+        self.model = TransformerKeyPointModel(num_frames=16, num_classes=max(2, len(label_to_idx) if label_to_idx else 2)).to(self.device)
         if optimizer.lower()=="sgd": self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         elif optimizer.lower()=="adamw": self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         elif optimizer.lower()=="adam": self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -140,7 +161,6 @@ class Trainer():   # Class used for creating the model and training it
             "optimizer": optimizer,
             "weight_decay": self.weight_decay,
             "stride": self.stride,
-            "use_keypoints": use_keypoints
         }
         print(f"The hyperparameters are {hyperparams} and will be stored at {self.save_model_path}config.yaml")
         with open(str(self.save_model_path) + "config.yaml", "w") as f: yaml.dump(hyperparams, f)
@@ -229,15 +249,17 @@ class Trainer():   # Class used for creating the model and training it
         
         with torch.inference_mode():
             for batch in self.val_dataloader:
-                videos, filenames, mask, labels = batch   # Load in the data
+                filenames, videos, segmented_videos, joints, mask, labels = batch
 
                 # Move everything to the right device
                 videos = videos.to(self.device)
+                segmented_videos = segmented_videos.to(self.device)
+                joints = joints.to(self.device)
                 mask = mask.to(self.device)
                 labels = labels.to(self.device)
             
                 # Pass in the video
-                logits = self.model.forward(videos, keypoints=None, mask=mask)    # TODO: Pass in keypoints
+                logits = self.model.forward(videos, segmented_videos, joints, mask=mask)
                 
                 # Get the loss
                 loss = self.loss_fn(logits, labels.long())
@@ -271,16 +293,18 @@ class Trainer():   # Class used for creating the model and training it
         self.model.train()
         
         for batch in self.train_dataloader:
-            videos, filenames, mask, labels = batch   # Load in the data
+            filenames, videos, segmented_videos, joints, mask, labels = batch
             
             # Move everything to the right device
             videos = videos.to(self.device)
+            segmented_videos = segmented_videos.to(self.device)
+            joints = joints.to(self.device)
             mask = mask.to(self.device)
             labels = labels.to(self.device)
             
             # Pass in the video
             self.optimizer.zero_grad()
-            logits = self.model.forward(videos, keypoints=None, mask=mask)    # TODO: Pass in keypoints
+            logits = self.model.forward(videos, segmented_videos, joints, mask=mask)
 
             # Get the loss and updates
             loss = self.loss_fn(logits, labels.long())
@@ -317,6 +341,7 @@ class Trainer():   # Class used for creating the model and training it
         
         for i in range(1, self.epochs + 1):
 
+            start = time.time()
             t_loss, t_num_correct, t_num_correct_top5, t_total = self.train_helper()
             t_acc = (t_num_correct / t_total)*100
             t_acc_top5 = (t_num_correct_top5 / t_total)*100
@@ -327,7 +352,7 @@ class Trainer():   # Class used for creating the model and training it
             e_loss, e_num_correct, e_num_correct_top5, e_total = self.eval_helper()
             e_acc = (e_num_correct / e_total)*100
             e_acc_top5 = (e_num_correct_top5 / e_total)*100
-            self.progress.set_description(f'Epoch {i}/{self.epochs} | Train Loss: {t_loss:.4f} | Val Loss: {e_loss:.4f} | Train Acc: {t_acc:.4f} ({int(t_num_correct/2)}/{int(t_total/2)}) | Val Acc: {e_acc:.4f} ({int(e_num_correct/2)}/{int(e_total/2)}) | Train Top5_Acc: {t_acc:.4f} ({int(t_num_correct_top5/2)}/{int(t_total/2)}) | Val Top5_Acc: {e_acc:.4f} ({int(e_num_correct_top5/2)}/{int(e_total/2)})')
+            self.progress.set_description(f'Epoch {i}/{self.epochs} | Time {time.time()-start} | Train Loss: {t_loss:.4f} | Val Loss: {e_loss:.4f} | Train Acc: {t_acc:.4f} ({int(t_num_correct/2)}/{int(t_total/2)}) | Val Acc: {e_acc:.4f} ({int(e_num_correct/2)}/{int(e_total/2)}) | Train Top5_Acc: {t_acc:.4f} ({int(t_num_correct_top5/2)}/{int(t_total/2)}) | Val Top5_Acc: {e_acc:.4f} ({int(e_num_correct_top5/2)}/{int(e_total/2)})')
             self.progress.update(1)
             
             eval_loss.append(e_loss)
@@ -350,18 +375,14 @@ if __name__ == '__main__':
 
     # Build datasets and loaders using helper in datasets.video_dataset
     print('Loading datasets')
-    train_loader, val_loader, test_loader, label_to_idx = get_data_loaders(VIDEO_DIR, SPLIT_DIR, batch_size=BATCH_SIZE, stride=STRIDE, debugging=debugging)
+    train_loader, val_loader, test_loader, label_to_idx = get_data_loaders(VIDEO_DIR, SPLIT_DIR, SEGMENTED_DIR, JOINT_DIR, batch_size=BATCH_SIZE, stride=STRIDE, debugging=debugging)
     print('Train / Val / Test sizes:', len(train_loader.dataset), len(val_loader.dataset), len(test_loader.dataset))
 
     # Create and fit the model
-    trainer = Trainer(train_loader, val_loader, test_loader, label_to_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LEARNING_RATE, optimizer=OPTIMIZER, weight_decay=WEIGHT_DECAY, stride=STRIDE, use_keypoints=USE_KEYPOINTS)
+    trainer = Trainer(train_loader, val_loader, test_loader, label_to_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LEARNING_RATE, optimizer=OPTIMIZER, weight_decay=WEIGHT_DECAY, stride=STRIDE)
     trainer.fit()
 
-    # TODO: Make the model (instead of the arbitrary tiny model above)
-        # Transformer
-        # Segmentation
-        # Keypoint/Pose Detection
-    # TODO: Find best pretrained model
+    # TODO: Find best pretrained model (ViT, ResNet, e.t.c.)
+    # TODO; Determine if it is worth using 3 color channels instead of gray scale
     # TODO: Add dropout
     # TODO: Weight the loss function to account for class imbalance
-    # TODO: Get various accurcy metrics (top-1, top-5, precision, recall, F1, confusion matrix)
