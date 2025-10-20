@@ -361,6 +361,9 @@ class Trainer():   # Class used for creating the model and training it
             evaluation_epochNum.append(i)
             best_epoch = self.save(train_loss, eval_loss, train_acc, eval_acc, train_top5_acc, eval_top5_acc, evaluation_epochNum, best_epoch)
         
+        print(f"The model finished training with eval acc {eval_acc[best_epoch]} and top5 eval accuraacy {eval_top5_acc[best_epoch]}")
+        print(f"The model is saved at {self.save_model_path}")
+
         return eval_acc
 
 
@@ -369,9 +372,13 @@ if __name__ == '__main__':
 
     # If you are debugging, use smaller datasets and fewer epochs (to save time)
     if not torch.cuda.is_available():
+        print("CUDE is not avaiable; so we will debug")
         debugging = True  # Set to false when you want to use the whole dataset
         EPOCHS = 3
         BATCH_SIZE = 4
+    else:
+        print("Using Cuda") 
+        debugging = False
 
     # Build datasets and loaders using helper in datasets.video_dataset
     print('Loading datasets')
