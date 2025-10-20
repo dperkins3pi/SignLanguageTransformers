@@ -368,8 +368,8 @@ class Trainer():   # Class used for creating the model and training it
 if __name__ == '__main__':
 
     # If you are debugging, use smaller datasets and fewer epochs (to save time)
-    debugging = True  # Set to false when you want to use the whole dataset
-    if debugging:
+    if not torch.cuda.is_available():
+        debugging = True  # Set to false when you want to use the whole dataset
         EPOCHS = 3
         BATCH_SIZE = 4
 

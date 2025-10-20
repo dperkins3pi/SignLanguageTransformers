@@ -4,3 +4,4 @@ SignEase/
 datasets/__pycache__/
 results/
 v
+slurm*
