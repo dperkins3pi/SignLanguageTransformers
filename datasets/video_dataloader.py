@@ -5,106 +5,59 @@ import torch
 from torch.utils.data import DataLoader
 from .video_dataset import VideoDataset
 
-
 def collate_batch(batch, label_to_idx=None):
-    """Collate function that pads variable-length clips along T (time) with zeros.
+    """Collate function that dynamically pads variable-length video tensors along T (time)."""
+    all_frames, all_segmented_frames, all_joints, all_filenames, all_labels, lengths = [], [], [], [], [], []
 
-    This is provided here so DataLoader workers can pickle and import it from
-    the `datasets.collate` module. See training.py for expected usage.
-    """
-    all_frames = []
-    all_segmented_frames = []
-    all_joints = []
-    all_filenames = []
-    all_labels = []
-    lengths = []
-
-    # Read in the batch
+    # Extract dimensions
     _, H, W = batch[0][0].shape
     _, D = batch[0][2].shape
-    for item in batch:
-        frames, segmented_frames, joints, filename, label = item
+
+    # Split items and record lengths
+    for frames, segmented_frames, joints, filename, label in batch:
         all_frames.append(frames)
         all_segmented_frames.append(segmented_frames)
         all_joints.append(joints)
         all_filenames.append(filename)
         all_labels.append(label)
         lengths.append(frames.shape[0])
+
     max_length = max(lengths)
+    batch_size = len(batch)
 
-    masks = torch.zeros((len(all_frames), max_length))
-    for i in range(len(all_frames)):
-        num_missing_frames = max_length - lengths[i]
+    # Initialize masks and padded containers
+    masks = torch.zeros((batch_size, max_length), dtype=torch.float32)
+    padded_frames, padded_segmented_frames, padded_joints = [], [], []
 
-        # Pad the frames
-        padding = torch.zeros((num_missing_frames, H, W))
-        all_frames[i] = torch.cat([all_frames[i], padding], dim=0)
-        all_segmented_frames[i] = torch.cat([all_segmented_frames[i], padding], dim=0)
-        all_joints[i] = torch.cat([all_joints[i], torch.zeros((num_missing_frames, D))], dim=0)
-        masks[i,:lengths[i]] = 1
+    for i in range(batch_size):
+        t, h, w = all_frames[i].shape
+        tdiff = max_length - t
+
+        # Pad along the temporal dimension (dim=0)
+        if tdiff > 0:
+            frame_pad = torch.zeros((tdiff, h, w), dtype=all_frames[i].dtype)
+            seg_pad = torch.zeros((tdiff, h, w), dtype=all_segmented_frames[i].dtype)
+            joint_pad = torch.zeros((tdiff, D), dtype=all_joints[i].dtype)
+            frames_padded = torch.cat([all_frames[i], frame_pad], dim=0)
+            seg_padded = torch.cat([all_segmented_frames[i], seg_pad], dim=0)
+            joints_padded = torch.cat([all_joints[i], joint_pad], dim=0)
+        else:
+            frames_padded, seg_padded, joints_padded = all_frames[i], all_segmented_frames[i], all_joints[i]
+
+        padded_frames.append(frames_padded)
+        padded_segmented_frames.append(seg_padded)
+        padded_joints.append(joints_padded)
+        masks[i, :t] = 1
+
+    # Stack all tensors along batch dimension
+    all_frames = torch.stack(padded_frames).float()
+    all_segmented_frames = torch.stack(padded_segmented_frames).float()
+    all_joints = torch.stack(padded_joints).float()
 
     # Map labels to indices
-    all_labels = torch.tensor([label_to_idx[l] if l is not None else -1 for l in all_labels], dtype=torch.long)
-    return all_filenames, torch.stack(all_frames).float(), torch.stack(all_segmented_frames).float(), torch.stack(all_joints).float(), masks, all_labels
+    all_labels = torch.tensor([label_to_idx[l] if label_to_idx and l is not None else -1 for l in all_labels], dtype=torch.long)
 
-
-    assert 1==0
-
-    # convert tensors to torch.Tensor if needed and collect temporal lengths
-    ts = []
-    T_list = []
-    HW_shape = None
-    HW_list = []
-    for t in tensors:
-        if not isinstance(t, torch.Tensor):
-            t = torch.as_tensor(t)
-        # t shape: (C, T, H, W)
-        if t.ndim != 4:
-            raise RuntimeError(f"Expected tensor with 4 dims (C,T,H,W), got {t.shape}")
-        ts.append(t)
-        T_list.append(t.shape[1])
-        if HW_shape is None:
-            HW_shape = t.shape[2:]
-        HW_list.append(t.shape[2:])
-
-    B = len(ts)
-    C = ts[0].shape[0]
-    T_max = max(T_list)
-    H, W = HW_shape
-
-    # Allocate batch tensor and pad along T with zeros
-    batch_t = torch.zeros((B, C, T_max, H, W), dtype=ts[0].dtype)
-    batch_mask = torch.zeros((B, T_max), dtype=torch.uint8)
-    for i, t in enumerate(ts):
-        Ti = t.shape[1]
-        batch_t[i, :, :Ti, :, :] = t
-        batch_mask[i, :Ti] = 1
-
-    out = [batch_t, filenames]
-
-    # Attach mask only if any dataset requested/returned a mask
-    if any(m is not None for m in masks_in):
-        provided_masks = [m for m in masks_in if m is not None]
-        if len(provided_masks) == B:
-            mask_tensor = torch.zeros((B, T_max), dtype=torch.uint8)
-            for i, m in enumerate(masks_in):
-                mi = m
-                if not isinstance(mi, torch.Tensor):
-                    mi = torch.as_tensor(mi)
-                mask_tensor[i, : mi.shape[0]] = mi.to(torch.uint8)
-            out.append(mask_tensor)
-        else:
-            out.append(batch_mask)
-    # Attach labels if present
-    if any(l is not None for l in labels_in):
-        labs = [l for l in labels_in if l is not None]
-        if label_to_idx is None:
-            uniq = sorted(set(labs))
-            label_to_idx = {l: i for i, l in enumerate(uniq)}
-        label_idxs = torch.tensor([label_to_idx[l] if l is not None else -1 for l in labels_in], dtype=torch.long)
-        out.append(label_idxs)
-
-    return tuple(out)
+    return all_filenames, all_frames, all_segmented_frames, all_joints, masks, all_labels
 
 
 def get_data_loaders(

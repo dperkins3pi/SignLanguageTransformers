@@ -127,7 +127,7 @@ class Trainer():   # Class used for creating the model and training it
             stride (int): The stride of the model (only used to store in the yaml file)
         """
         # Load in the data
-        self.train_dataloader, self.val_dataloader, self.test_loader = train_loader, val_loader, test_loader
+        self.train_dataloader, self.val_dataloader, self.test_dataloader = train_loader, val_loader, test_loader
         self.label_to_idx = label_to_idx
         self.stride = stride
         # Store hyperparameters
@@ -229,7 +229,7 @@ class Trainer():   # Class used for creating the model and training it
         return best_epoch
 
     def eval_helper(self):
-        """Evaluates the model on the test set, at a given epoch
+        """Evaluates the model on the evaluation set, at a given epoch
 
         Args:
             epochNum (int): Current epoch number
@@ -249,6 +249,58 @@ class Trainer():   # Class used for creating the model and training it
         
         with torch.inference_mode():
             for batch in self.val_dataloader:
+                filenames, videos, segmented_videos, joints, mask, labels = batch
+
+                # Move everything to the right device
+                videos = videos.to(self.device)
+                segmented_videos = segmented_videos.to(self.device)
+                joints = joints.to(self.device)
+                mask = mask.to(self.device)
+                labels = labels.to(self.device)
+            
+                # Pass in the video
+                logits = self.model.forward(videos, segmented_videos, joints, mask=mask)
+                
+                # Get the loss
+                loss = self.loss_fn(logits, labels.long())
+                losses.append(loss.item())
+                
+                # Get accuracy
+                predictions = torch.argmax(logits, dim=1)  
+                correct = (predictions == labels)
+                num_correct += correct.sum().item()
+
+                # Top-5 accuracy
+                top5_preds = torch.topk(logits, k=5, dim=1).indices
+                top5_correct = top5_preds.eq(labels.unsqueeze(1))
+                num_top5_correct += top5_correct.any(dim=1).sum().item()
+                total += labels.size(0)
+        
+        loss_val = np.mean(losses)
+        
+        return loss_val, num_correct, num_top5_correct, total
+    
+    def test_helper(self):
+        """Evaluates the model on the test set, at the end
+
+        Args:
+            epochNum (int): Current epoch number
+            train_loss (float): The loss from training
+            train_acc (float): The training accuracy
+
+        Returns:
+            loss_val (float): The average loss for all instances in the test set
+            num_correct (int): The number of teams labelled correctly
+            total (int): The number of total teams
+            pred_arr (tensor 1-D): The predictions (OFFENSE=1 or DEFENSE=0) for each team
+            label_arr (tensor 1-D): The true labels (OFFENSE=1 or DEFENSE=0) for each team
+        """
+        num_correct, num_top5_correct, total = 0, 0, 0
+        losses =[]
+        self.model.eval()
+        
+        with torch.inference_mode():
+            for batch in self.test_dataloader:
                 filenames, videos, segmented_videos, joints, mask, labels = batch
 
                 # Move everything to the right device
@@ -363,6 +415,11 @@ class Trainer():   # Class used for creating the model and training it
         
         print(f"The model finished training with eval acc {eval_acc[best_epoch]} and top5 eval accuraacy {eval_top5_acc[best_epoch]}")
         print(f"The model is saved at {self.save_model_path}")
+        self.model.load_state_dict(torch.load(f"{self.save_model_path}best.pt", map_location=self.device))
+        t_loss, t_num_correct, t_num_correct_top5, t_total = self.test_helper()
+        print(f"Final test loss: {t_loss}")
+        print(f"Final test accuracy: {t_num_correct/t_total}")
+        print(f"Final test top5 accuracy: {t_num_correct_top5/t_total}")
 
         return eval_acc
 
@@ -372,13 +429,14 @@ if __name__ == '__main__':
 
     # If you are debugging, use smaller datasets and fewer epochs (to save time)
     if not torch.cuda.is_available():
-        print("CUDE is not avaiable; so we will debug")
+        print("CUDA is not avaiable; so we will debug")
         debugging = True  # Set to false when you want to use the whole dataset
         EPOCHS = 3
         BATCH_SIZE = 4
     else:
         print("Using Cuda") 
         debugging = False
+    debugging = False
 
     # Build datasets and loaders using helper in datasets.video_dataset
     print('Loading datasets')

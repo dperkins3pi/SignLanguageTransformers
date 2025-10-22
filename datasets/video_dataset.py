@@ -127,6 +127,12 @@ class VideoDataset(Dataset):
         frames = self._read_video(video_path, frame_numbers)
         segmented_frames = self._read_video(segmented_path, None)   # Set frame_numbers to None for segmented
 
+        # Ensure the shapes match
+        num_frames = min(joints.shape[0], frames.shape[0], segmented_frames.shape[0])
+        joints = joints[:num_frames]
+        frames = frames[:num_frames]
+        segmented_frames = segmented_frames[:num_frames]
+
         frames = torch.from_numpy(frames)  # (T, H, W)
         segmented_frames = torch.from_numpy(segmented_frames)
         joints = torch.from_numpy(joints)
