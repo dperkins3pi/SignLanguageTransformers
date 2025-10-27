@@ -1,14 +1,13 @@
 #!/bin/bash --login
 
-#SBATCH -C 'pascal'
-#SBATCH --mem-per-cpu=10G 
+#SBATCH --partition=m13h           # or m13l, m9g, m8g as available
 #SBATCH --job-name=SignLanguage
 #SBATCH --time=72:00:00
-
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=3 
-#SBATCH --gres=gpu:4
-#SBATCH --ntasks-per-node=4 
+#SBATCH --gres=gpu:4               # set to the max per node (or less)
+#SBATCH --cpus-per-task=8          # adjust for your workload
+#SBATCH --mem=120G                 # set less than total per node
+#SBATCH --ntasks-per-node=4        # 1 per GPU for DDP
 
 module load cuda/12.4
 # Print out useful data

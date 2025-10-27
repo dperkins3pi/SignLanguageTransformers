@@ -23,7 +23,7 @@ RESULTS_DIR = 'results'   # Place to store the results
 STRIDE = 2   # Look at every STRIDE frames (rather than all of them, for computational efficiency)
 EPOCHS = 100
 LEARNING_RATE = 0.001
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 OPTIMIZER = "AdamW"
 WEIGHT_DECAY = 0.001
 VISION_MODEL = "ResNet18"
@@ -394,14 +394,18 @@ class Trainer():   # Class used for creating the model and training it
         for i in range(1, self.epochs + 1):
 
             start = time.time()
+            print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
             t_loss, t_num_correct, t_num_correct_top5, t_total = self.train_helper()
+            print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
             t_acc = (t_num_correct / t_total)*100
             t_acc_top5 = (t_num_correct_top5 / t_total)*100
             train_loss.append(t_loss)
             train_acc.append(t_acc)
             train_top5_acc.append(t_acc_top5)
 
+            print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
             e_loss, e_num_correct, e_num_correct_top5, e_total = self.eval_helper()
+            print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
             e_acc = (e_num_correct / e_total)*100
             e_acc_top5 = (e_num_correct_top5 / e_total)*100
             self.progress.set_description(f'Epoch {i}/{self.epochs} | Time {time.time()-start} | Train Loss: {t_loss:.4f} | Val Loss: {e_loss:.4f} | Train Acc: {t_acc:.4f} ({int(t_num_correct/2)}/{int(t_total/2)}) | Val Acc: {e_acc:.4f} ({int(e_num_correct/2)}/{int(e_total/2)}) | Train Top5_Acc: {t_acc:.4f} ({int(t_num_correct_top5/2)}/{int(t_total/2)}) | Val Top5_Acc: {e_acc:.4f} ({int(e_num_correct_top5/2)}/{int(e_total/2)})')
@@ -436,7 +440,6 @@ if __name__ == '__main__':
     else:
         print("Using Cuda") 
         debugging = False
-    debugging = False
 
     # Build datasets and loaders using helper in datasets.video_dataset
     print('Loading datasets')
