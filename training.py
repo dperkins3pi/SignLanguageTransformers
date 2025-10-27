@@ -23,27 +23,53 @@ RESULTS_DIR = 'results'   # Place to store the results
 STRIDE = 2   # Look at every STRIDE frames (rather than all of them, for computational efficiency)
 EPOCHS = 100
 LEARNING_RATE = 0.001
-BATCH_SIZE = 4
+BATCH_SIZE = 16
 OPTIMIZER = "AdamW"
 WEIGHT_DECAY = 0.001
 VISION_MODEL = "ResNet18"
+USE_ORIGINAL_VIDEOS = True   # If False, only use segmented videos
 
 
 class TransformerKeyPointModel(nn.Module):
-    def __init__(self, num_classes=10, num_frames=54, keypoint_dim=237, nhead=8, vision_model=VISION_MODEL):
+    def __init__(self, num_classes=10, num_frames=54, keypoint_dim=237, nhead=8, vision_model=VISION_MODEL, use_original_videos=USE_ORIGINAL_VIDEOS):
         super().__init__()
 
+        self.use_original_videos = use_original_videos
+
         if "resnet" in vision_model.lower():
+
             # Load pretrained ResNet (e.g., ResNet18)
-            if "18" in vision_model.lower(): resnet = models.resnet18(pretrained=True)
-            elif "34" in vision_model.lower(): resnet = models.resnet34(pretrained=True)
-            elif "50" in vision_model.lower(): resnet = models.resnet50(pretrained=True)
-            # Create a new Conv2d for grayscale input (instead of 3D)
-            rgb_weights = resnet.conv1.weight.data  # shape: (64, 3, 7, 7)
+            if "18" in vision_model.lower(): 
+                if self.use_original_videos: resnet1 = models.resnet18(pretrained=True)
+                resnet2 = models.resnet18(pretrained=True)
+            elif "34" in vision_model.lower(): 
+                if self.use_original_videos: resnet1 = models.resnet34(pretrained=True)
+                resnet2 = models.resnet34(pretrained=True)
+            elif "50" in vision_model.lower(): 
+                if self.use_original_videos: resnet1 = models.resnet50(pretrained=True)
+                resnet2 = models.resnet50(pretrained=True)
+
+            # Create a new Conv2d for grayscale input of segmented videos (instead of 3D)
+            rgb_weights = resnet2.conv1.weight.data  # shape: (64, 3, 7, 7)
             new_conv1 = nn.Conv2d(in_channels=1, out_channels=64, kernel_size=7, stride=2, padding=3, bias=False)
             new_conv1.weight.data = rgb_weights.mean(dim=1, keepdim=True) # Average the weights across the RGB channels (axis=1)
-            resnet.conv1 = new_conv1   # Replace the first conv layer in the model
-            self.vision_model = create_feature_extractor(resnet, return_nodes={'avgpool': 'features'})
+            resnet2.conv1 = new_conv1   # Replace the first conv layer in the model
+
+            # Freeze early layers (except the first if using grayscale since the ResNet was trained on RGB images)
+            if self.use_original_videos:
+                for name, param in resnet1.named_parameters():
+                    if name.startswith("layer4") or name.startswith("fc"): param.requires_grad = True
+                    else: param.requires_grad = False 
+            for name, param in resnet2.named_parameters():
+                if name.startswith("layer4") or name.startswith("fc"): param.requires_grad = True
+                elif name.startswith("conv1"): param.requires_grad = True
+                else: param.requires_grad = False 
+
+            # Create feature extractors to get features from the avgpool layer
+            if self.use_original_videos: self.vision_model1 = create_feature_extractor(resnet1, return_nodes={'avgpool': 'features'})
+            self.vision_model2 = create_feature_extractor(resnet2, return_nodes={'avgpool': 'features'})
+
+            # Extract output dimension
             if "18" in vision_model.lower() or "34" in vision_model.lower(): self.feature_dim = 512
             elif "50" in vision_model.lower() or "101" in vision_model.lower() or "152" in vision_model.lower(): self.feature_dim = 2048
         else:
@@ -57,48 +83,64 @@ class TransformerKeyPointModel(nn.Module):
         self.joint_model = nn.Sequential(nn.Linear(keypoint_dim, self.feature_dim), nn.GELU())
 
         # Transformer on the combined features
-        self.temporal_transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=self.feature_dim*3, nhead=nhead, batch_first=True),num_layers=2)
+        if self.use_original_videos: self.temporal_transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=self.feature_dim*3, nhead=nhead, batch_first=True),num_layers=2)
+        else: self.temporal_transformer = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=self.feature_dim*2, nhead=nhead, batch_first=True),num_layers=2)
 
         # Head for classification
-        self.head = nn.Sequential(nn.Linear(self.feature_dim*3, num_classes*2), nn.GELU(), nn.Linear(num_classes*2, num_classes))
+        if self.use_original_videos: self.head = nn.Sequential(nn.Linear(self.feature_dim*3, num_classes*2), nn.GELU(), nn.Linear(num_classes*2, num_classes))
+        else: self.head = nn.Sequential(nn.Linear(self.feature_dim*2, num_classes*2), nn.GELU(), nn.Linear(num_classes*2, num_classes))
 
-    def forward(self, videos, segmented_videos, joints, mask=None):    # TODO: Make this work with keypoints;  TODO: Parameter testing (only small values in ViT work for local computer)
+    def forward(self, videos, segmented_videos, joints, mask=None): 
         """
         x: (B, C, T, H, W)
         keypoints: (B, T, keypoint_dim)
         mask: (B, T)
         """
         # Extract the dimensions
-        B, T, H, W = videos.shape
+        B, T, H, W = segmented_videos.shape
         _, _, D = joints.shape
 
         # Pass in the gray scale video through the vision model
-        video_features = []
-        for t in range(T):   # Apply ViT to each   # TODO: Could remove for loop by stacking batch and temporal dimension; but this requires more memory
-            frame = videos[:, t].unsqueeze(1)  # (B, 1, H, W)
-            features = self.vision_model(frame)['features'].flatten(1)  # Batch x feature_dim
-            video_features.append(features)
-        video_features = torch.stack(video_features, dim=1)  # (B, T, feature_dim)
+        if self.use_original_videos:
+            # Combine batch and time, bring channels forward for ResNet
+            frames = videos.permute(0, 1, 4, 2, 3).contiguous()  # (B, T, 3, H, W)
+            frames = frames.view(B * T, 3, H, W)                 # (B*T, 3, H, W)
+            features = self.vision_model1(frames)['features'].flatten(1)  # (B*T, feature_dim)
+            video_features = features.view(B, T, -1)
+            # video_features = []   # Use these lines if the above causes a memory issue
+            # for t in range(T):   # Apply ViT to each
+            #     frame = videos[:, t].permute(0, 3, 1, 2).contiguous()  # (B, 3, H, W)
+            #     features = self.vision_model1(frame)['features'].flatten(1)  # Batch x feature_dim
+            #     video_features.append(features)
+            # video_features = torch.stack(video_features, dim=1)  # (B, T, feature_dim)
 
         # Pass in the segmented video through the vision model
-        segmented_features = []
-        for t in range(T):   # Apply ViT to each   # TODO: Could remove for loop by stacking batch and temporal dimension; but this requires more memory
-            frame = segmented_videos[:, t].unsqueeze(1)  # (B, 1, H, W)
-            features = self.vision_model(frame)['features'].flatten(1)  # Batch x feature_dim
-            segmented_features.append(features)
-        segmented_features = torch.stack(segmented_features, dim=1)  # (B, T, feature_dim)
+        frames = segmented_videos.view(B * T, 1, H, W)  # Combine batch and time, add single channel
+        features = self.vision_model2(frames)['features'].flatten(1)  # (B*T, feature_dim)
+        segmented_features = features.view(B, T, -1)  # Reshape back to (B, T, feature_dim)
+        # segmented_features = []   # Use these lines if the above causes a memory issue
+        # for t in range(T):   # Apply ViT to each
+        #     frame = segmented_videos[:, t].unsqueeze(1)  # (B, 1, H, W)
+        #     features = self.vision_model2(frame)['features'].flatten(1)  # Batch x feature_dim
+        #     segmented_features.append(features)
+        # segmented_features = torch.stack(segmented_features, dim=1)  # (B, T, feature_dim)
 
-        # Pass in joint features through a transformer
-        joint_features = []
-        for t in range(T):   # Apply ViT to each   # TODO: Could remove for loop by stacking batch and temporal dimension; but this requires more memory
-            coordinates = joints[:, t].view(B, 79, 3)  # (B, 79, 3) as there are x,y,z coordinates for each joint
-            attn_out, _ = self.attn(coordinates, coordinates, coordinates)  # outputs shape: (batch_size, seq_len, keypoint_dim)
-            features = self.joint_model(attn_out.reshape(B,self.keypoint_dim))
-            joint_features.append(features)
-        joint_features = torch.stack(joint_features, dim=1)  # (B, T, feature_dim)
+        coordinates = joints.view(B * T, 79, 3)  # (B*T, 79, 3)
+        attn_out, _ = self.attn(coordinates, coordinates, coordinates)  # (B*T, 79, 3)  # Pass through attention (assuming batch_first=True)
+        attn_out_flat = attn_out.reshape(B * T, -1)  # (B*T, 79*3 = 237)    Flatten output of attention for joint model
+        features = self.joint_model(attn_out_flat)  # (B*T, feature_dim)  # Pass through joint model (should accept (batch, D))
+        joint_features = features.view(B, T, -1)   # Reshape back to (B, T, feature_dim)
+        # joint_features = []  # Use these lines if the above causes a memory issue
+        # for t in range(T):   # Apply ViT to each
+        #     coordinates = joints[:, t].view(B, 79, 3)  # (B, 79, 3) as there are x,y,z coordinates for each joint
+        #     attn_out, _ = self.attn(coordinates, coordinates, coordinates)  # outputs shape: (batch_size, seq_len, keypoint_dim)
+        #     features = self.joint_model(attn_out.reshape(B,self.keypoint_dim))
+        #     joint_features.append(features)
+        # joint_features = torch.stack(joint_features, dim=1)  # (B, T, feature_dim)
 
         # Concatenate features, pass through temporal transformer, and then linear layers
-        all_features = torch.cat([video_features, segmented_features, joint_features], dim=2)  # Shape: (batch_size, time, 1536)
+        if self.use_original_videos: all_features = torch.cat([video_features, segmented_features, joint_features], dim=2)  # Shape: (batch_size, time, 1536)
+        else: all_features = torch.cat([segmented_features, joint_features], dim=2)
         out = self.temporal_transformer(all_features)
         pooled = out.mean(dim=1)
         logits = self.head(pooled)
@@ -109,7 +151,7 @@ class TransformerKeyPointModel(nn.Module):
 
 class Trainer():   # Class used for creating the model and training it
     def __init__(self, train_loader, val_loader, test_loader, label_to_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LEARNING_RATE, optimizer=OPTIMIZER, weight_decay=WEIGHT_DECAY, \
-        results_dir=RESULTS_DIR, save_output=True, stride=None):
+        results_dir=RESULTS_DIR, save_output=True, stride=None, pretrained_weights_path=None, use_original_videos=USE_ORIGINAL_VIDEOS):
         """Load in the data, create the model, and make directories to store future plots
         
         Args:
@@ -125,11 +167,13 @@ class Trainer():   # Class used for creating the model and training it
             results_dir (str): The file path where the results will be stored
             save_output (bool): Whether or not to output the plots. Defaults to True.
             stride (int): The stride of the model (only used to store in the yaml file)
+            use_original_videos (bool): Whether or not to use the original videos along with the segmented ones
         """
         # Load in the data
         self.train_dataloader, self.val_dataloader, self.test_dataloader = train_loader, val_loader, test_loader
         self.label_to_idx = label_to_idx
         self.stride = stride
+        self.use_original_videos = use_original_videos
         # Store hyperparameters
         self.epochs, self.batchsize, self.lr, self.weight_decay = epochs, batch_size, lr, weight_decay
         self.loss_fn = nn.CrossEntropyLoss()   # TODO: Change loss function if needed
@@ -137,6 +181,7 @@ class Trainer():   # Class used for creating the model and training it
         elif torch.backends.mps.is_available(): self.device = torch.device("mps")
         else: self.device = torch.device("cpu")
         self.model = TransformerKeyPointModel(num_frames=16, num_classes=max(2, len(label_to_idx) if label_to_idx else 2)).to(self.device)
+        if pretrained_weights_path is not None: self.model.load_state_dict(torch.load(pretrained_weights_path, map_location=self.device))
         if optimizer.lower()=="sgd": self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         elif optimizer.lower()=="adamw": self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         elif optimizer.lower()=="adam": self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -161,6 +206,7 @@ class Trainer():   # Class used for creating the model and training it
             "optimizer": optimizer,
             "weight_decay": self.weight_decay,
             "stride": self.stride,
+            "use_original_videos": self.use_original_videos
         }
         print(f"The hyperparameters are {hyperparams} and will be stored at {self.save_model_path}config.yaml")
         with open(str(self.save_model_path) + "config.yaml", "w") as f: yaml.dump(hyperparams, f)
@@ -208,6 +254,7 @@ class Trainer():   # Class used for creating the model and training it
         prev_best_val = eval_acc[prev_best_epoch] if prev_best_epoch is not None else 0.
         prev_best_val_top5 = eval_top5_acc[prev_best_epoch] if prev_best_epoch is not None else 0.
         prev_best_train = train_acc[prev_best_epoch] if prev_best_epoch is not None else 0.
+        torch.save(self.model.state_dict(), str(self.save_model_path + "last" + ".pt"))
         if prev_best_epoch is None: 
             torch.save(self.model.state_dict(), str(self.save_model_path + "best" + ".pt"))
             best_epoch = len(eval_acc) - 1
@@ -249,10 +296,12 @@ class Trainer():   # Class used for creating the model and training it
         
         with torch.inference_mode():
             for batch in self.val_dataloader:
-                filenames, videos, segmented_videos, joints, mask, labels = batch
+                if self.use_original_videos: filenames, videos, segmented_videos, joints, mask, labels = batch
+                else: filenames, segmented_videos, joints, mask, labels = batch
 
                 # Move everything to the right device
-                videos = videos.to(self.device)
+                if self.use_original_videos: videos = videos.to(self.device)
+                else: videos = None
                 segmented_videos = segmented_videos.to(self.device)
                 joints = joints.to(self.device)
                 mask = mask.to(self.device)
@@ -301,10 +350,12 @@ class Trainer():   # Class used for creating the model and training it
         
         with torch.inference_mode():
             for batch in self.test_dataloader:
-                filenames, videos, segmented_videos, joints, mask, labels = batch
+                if self.use_original_videos: filenames, videos, segmented_videos, joints, mask, labels = batch
+                else: filenames, segmented_videos, joints, mask, labels = batch
 
                 # Move everything to the right device
-                videos = videos.to(self.device)
+                if self.use_original_videos: videos = videos.to(self.device)
+                else: videos = None
                 segmented_videos = segmented_videos.to(self.device)
                 joints = joints.to(self.device)
                 mask = mask.to(self.device)
@@ -345,10 +396,12 @@ class Trainer():   # Class used for creating the model and training it
         self.model.train()
         
         for batch in self.train_dataloader:
-            filenames, videos, segmented_videos, joints, mask, labels = batch
-            
+            if self.use_original_videos: filenames, videos, segmented_videos, joints, mask, labels = batch
+            else: filenames, segmented_videos, joints, mask, labels = batch
+
             # Move everything to the right device
-            videos = videos.to(self.device)
+            if self.use_original_videos: videos = videos.to(self.device)
+            else: videos = None
             segmented_videos = segmented_videos.to(self.device)
             joints = joints.to(self.device)
             mask = mask.to(self.device)
@@ -394,18 +447,18 @@ class Trainer():   # Class used for creating the model and training it
         for i in range(1, self.epochs + 1):
 
             start = time.time()
-            print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
+            # print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
             t_loss, t_num_correct, t_num_correct_top5, t_total = self.train_helper()
-            print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
+            # print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
             t_acc = (t_num_correct / t_total)*100
             t_acc_top5 = (t_num_correct_top5 / t_total)*100
             train_loss.append(t_loss)
             train_acc.append(t_acc)
             train_top5_acc.append(t_acc_top5)
 
-            print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
+            # print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
             e_loss, e_num_correct, e_num_correct_top5, e_total = self.eval_helper()
-            print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
+            # print(f"[{i}] Allocated: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB | Reserved: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
             e_acc = (e_num_correct / e_total)*100
             e_acc_top5 = (e_num_correct_top5 / e_total)*100
             self.progress.set_description(f'Epoch {i}/{self.epochs} | Time {time.time()-start} | Train Loss: {t_loss:.4f} | Val Loss: {e_loss:.4f} | Train Acc: {t_acc:.4f} ({int(t_num_correct/2)}/{int(t_total/2)}) | Val Acc: {e_acc:.4f} ({int(e_num_correct/2)}/{int(e_total/2)}) | Train Top5_Acc: {t_acc:.4f} ({int(t_num_correct_top5/2)}/{int(t_total/2)}) | Val Top5_Acc: {e_acc:.4f} ({int(e_num_correct_top5/2)}/{int(e_total/2)})')
@@ -443,11 +496,14 @@ if __name__ == '__main__':
 
     # Build datasets and loaders using helper in datasets.video_dataset
     print('Loading datasets')
-    train_loader, val_loader, test_loader, label_to_idx = get_data_loaders(VIDEO_DIR, SPLIT_DIR, SEGMENTED_DIR, JOINT_DIR, batch_size=BATCH_SIZE, stride=STRIDE, debugging=debugging)
+    train_loader, val_loader, test_loader, label_to_idx = get_data_loaders(VIDEO_DIR, SPLIT_DIR, SEGMENTED_DIR, JOINT_DIR, batch_size=BATCH_SIZE, stride=STRIDE, debugging=debugging, use_original_videos=USE_ORIGINAL_VIDEOS)
     print('Train / Val / Test sizes:', len(train_loader.dataset), len(val_loader.dataset), len(test_loader.dataset))
 
     # Create and fit the model
-    trainer = Trainer(train_loader, val_loader, test_loader, label_to_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LEARNING_RATE, optimizer=OPTIMIZER, weight_decay=WEIGHT_DECAY, stride=STRIDE)
+    # PRETRAINED_WEIGHTS_PATH = "current_weights.pt"    # If you want to start with pretrained weights, set the path here; else set to None
+    PRETRAINED_WEIGHTS_PATH = None
+    trainer = Trainer(train_loader, val_loader, test_loader, label_to_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LEARNING_RATE, optimizer=OPTIMIZER, weight_decay=WEIGHT_DECAY, \
+        stride=STRIDE, pretrained_weights_path=PRETRAINED_WEIGHTS_PATH, use_original_videos=USE_ORIGINAL_VIDEOS)
     trainer.fit()
 
     # TODO: Find best pretrained model (ViT, ResNet, e.t.c.)
