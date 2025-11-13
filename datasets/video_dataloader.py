@@ -5,112 +5,88 @@ import torch
 from torch.utils.data import DataLoader
 from .video_dataset import VideoDataset
 
+def collate_batch(batch, label_to_idx=None, use_original_videos=True):
+    """Collate function that dynamically pads variable-length video tensors along T (time)."""
+    if use_original_videos: all_frames, all_segmented_frames, all_joints, all_filenames, all_labels, lengths = [], [], [], [], [], []
+    else: all_segmented_frames, all_joints, all_filenames, all_labels, lengths = [], [], [], [], []
 
-def collate_batch(batch, label_to_idx=None):
-    """Collate function that pads variable-length clips along T (time) with zeros.
+    # Extract dimensions
+    if use_original_videos: _, H, W = batch[0][1].shape
+    else: _, H, W = batch[0][0].shape
+    if use_original_videos: _, D = batch[0][2].shape
+    else: _, D = batch[0][1].shape
 
-    This is provided here so DataLoader workers can pickle and import it from
-    the `datasets.collate` module. See training.py for expected usage.
-    """
-    tensors = []
-    filenames = []
-    masks_in = []
-    labels_in = []
+    # Split items and record lengths
+    if use_original_videos:
+        for frames, segmented_frames, joints, filename, label in batch:
+            all_frames.append(frames)
+            all_segmented_frames.append(segmented_frames)
+            all_joints.append(joints)
+            all_filenames.append(filename)
+            all_labels.append(label)
+            lengths.append(frames.shape[0])
+    else:
+        for segmented_frames, joints, filename, label in batch:
+            all_segmented_frames.append(segmented_frames)
+            all_joints.append(joints)
+            all_filenames.append(filename)
+            all_labels.append(label)
+            lengths.append(segmented_frames.shape[0])
 
-    for item in batch:
-        if len(item) == 2:
-            t, fn = item
-            tensors.append(t)
-            filenames.append(fn)
-            masks_in.append(None)
-            labels_in.append(None)
-        elif len(item) == 3:
-            t, fn, third = item
-            tensors.append(t)
-            filenames.append(fn)
-            # disambiguate: assume string => label, else mask
-            if isinstance(third, str):
-                masks_in.append(None)
-                labels_in.append(third)
-            else:
-                masks_in.append(third)
-                labels_in.append(None)
-        elif len(item) == 4:
-            t, fn, m, lab = item
-            tensors.append(t)
-            filenames.append(fn)
-            masks_in.append(m)
-            labels_in.append(lab)
+    max_length = max(lengths)
+    batch_size = len(batch)
+
+    # Initialize masks and padded containers
+    masks = torch.zeros((batch_size, max_length), dtype=torch.float32)
+    padded_frames, padded_segmented_frames, padded_joints = [], [], []
+
+    for i in range(batch_size):
+        if use_original_videos: t, h, w, c = all_frames[i].shape
+        else: t, h, w = all_segmented_frames[i].shape
+        tdiff = max_length - t
+
+        # Pad along the temporal dimension (dim=0)
+        if tdiff > 0:
+            if use_original_videos: frame_pad = torch.zeros((tdiff, h, w, c), dtype=all_frames[i].dtype)
+            seg_pad = torch.zeros((tdiff, h, w), dtype=all_segmented_frames[i].dtype)
+            joint_pad = torch.zeros((tdiff, D), dtype=all_joints[i].dtype)
+            if use_original_videos: frames_padded = torch.cat([all_frames[i], frame_pad], dim=0)
+            seg_padded = torch.cat([all_segmented_frames[i], seg_pad], dim=0)
+            joints_padded = torch.cat([all_joints[i], joint_pad], dim=0)
         else:
-            raise RuntimeError("Unexpected item format from dataset")
+            if use_original_videos: frames_padded, seg_padded, joints_padded = all_frames[i], all_segmented_frames[i], all_joints[i]
+            else: seg_padded, joints_padded = all_segmented_frames[i], all_joints[i]
 
-    # convert tensors to torch.Tensor if needed and collect temporal lengths
-    ts = []
-    T_list = []
-    HW_shape = None
-    HW_list = []
-    for t in tensors:
-        if not isinstance(t, torch.Tensor):
-            t = torch.as_tensor(t)
-        # t shape: (C, T, H, W)
-        if t.ndim != 4:
-            raise RuntimeError(f"Expected tensor with 4 dims (C,T,H,W), got {t.shape}")
-        ts.append(t)
-        T_list.append(t.shape[1])
-        if HW_shape is None:
-            HW_shape = t.shape[2:]
-        HW_list.append(t.shape[2:])
+        if use_original_videos: padded_frames.append(frames_padded)
+        padded_segmented_frames.append(seg_padded)
+        padded_joints.append(joints_padded)
+        masks[i, :t] = 1
 
-    B = len(ts)
-    C = ts[0].shape[0]
-    T_max = max(T_list)
-    H, W = HW_shape
+    # Stack all tensors along batch dimension
+    if use_original_videos: all_frames = torch.stack(padded_frames).float()
+    all_segmented_frames = torch.stack(padded_segmented_frames).float()
+    all_joints = torch.stack(padded_joints).float()
 
-    # Allocate batch tensor and pad along T with zeros
-    batch_t = torch.zeros((B, C, T_max, H, W), dtype=ts[0].dtype)
-    batch_mask = torch.zeros((B, T_max), dtype=torch.uint8)
-    for i, t in enumerate(ts):
-        Ti = t.shape[1]
-        batch_t[i, :, :Ti, :, :] = t
-        batch_mask[i, :Ti] = 1
+    # Map labels to indices
+    all_labels = torch.tensor([label_to_idx[l] if label_to_idx and l is not None else -1 for l in all_labels], dtype=torch.long)
 
-    out = [batch_t, filenames]
-
-    # Attach mask only if any dataset requested/returned a mask
-    if any(m is not None for m in masks_in):
-        provided_masks = [m for m in masks_in if m is not None]
-        if len(provided_masks) == B:
-            mask_tensor = torch.zeros((B, T_max), dtype=torch.uint8)
-            for i, m in enumerate(masks_in):
-                mi = m
-                if not isinstance(mi, torch.Tensor):
-                    mi = torch.as_tensor(mi)
-                mask_tensor[i, : mi.shape[0]] = mi.to(torch.uint8)
-            out.append(mask_tensor)
-        else:
-            out.append(batch_mask)
-    # Attach labels if present
-    if any(l is not None for l in labels_in):
-        labs = [l for l in labels_in if l is not None]
-        if label_to_idx is None:
-            uniq = sorted(set(labs))
-            label_to_idx = {l: i for i, l in enumerate(uniq)}
-        label_idxs = torch.tensor([label_to_idx[l] if l is not None else -1 for l in labels_in], dtype=torch.long)
-        out.append(label_idxs)
-
-    return tuple(out)
+    if use_original_videos: return all_filenames, all_frames, all_segmented_frames, all_joints, masks, all_labels
+    else: return all_filenames, all_segmented_frames, all_joints, masks, all_labels
 
 
 def get_data_loaders(
     videos_dir: str,
     splits_dir: str,
+    segmented_dir: str, 
+    joint_dir: str,
     batch_size: int = 8,
     stride: int=1,
     num_workers: int = 4,
     num_frames: Optional[int] = None,
     pad_mode: str = "repeat",
     return_mask: bool = True,
-    debugging: bool = False
+    debugging: bool = False,
+    use_original_videos: bool = True,
 ):
     """Helper to construct train/val/test VideoDatasets and DataLoaders.
 
@@ -120,9 +96,9 @@ def get_data_loaders(
     val_csv = os.path.join(splits_dir, "val.csv")
     test_csv = os.path.join(splits_dir, "test.csv")
 
-    train_ds = VideoDataset.from_split_csv(train_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
-    val_ds = VideoDataset.from_split_csv(val_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
-    test_ds = VideoDataset.from_split_csv(test_csv, videos_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride)
+    train_ds = VideoDataset.from_split_csv(train_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos)
+    val_ds = VideoDataset.from_split_csv(val_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos)
+    test_ds = VideoDataset.from_split_csv(test_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos)
 
     # build label->idx
     label_to_idx = None
@@ -149,7 +125,7 @@ def get_data_loaders(
         val_ds = torch.utils.data.Subset(val_ds, list(range(min(20, len(val_ds)))))
         test_ds = torch.utils.data.Subset(test_ds, list(range(min(20, len(test_ds)))))
 
-    collate = functools.partial(collate_batch, label_to_idx=label_to_idx)
+    collate = functools.partial(collate_batch, label_to_idx=label_to_idx, use_original_videos=use_original_videos)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, collate_fn=collate)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=max(1, num_workers // 2), collate_fn=collate)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=max(1, num_workers // 2), collate_fn=collate)
