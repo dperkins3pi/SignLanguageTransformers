@@ -13,8 +13,18 @@ def get_most_common(data, column, number):
         column (str): the column to get the values from
         number (int): the number of most common values to get
     """
-    glosses = (train['Gloss'].value_counts().sort_index().sort_values(ascending=False, kind='stable').head(100).index)
-    return glosses
+    glosses = data[column].value_counts().sort_index().sort_values(ascending=False, kind='stable').index
+    most_common = []
+    helper = []
+    i = 0
+    #Checks for duplicate glosses (word1 v.s word 2)
+    while len(most_common) < number and i < len(glosses):
+        stripped = glosses[i][:-1] if glosses[i][-1].isdigit() else glosses[i]  
+        if not (stripped in helper):
+            helper.append(glosses[i][:-1])
+            most_common.append(glosses[i])
+        i += 1
+    return most_common
 
 
 def remove_excess_folders(folderPath, glosses, newFolder, segmented = False):
@@ -40,6 +50,7 @@ def remove_excess_folders(folderPath, glosses, newFolder, segmented = False):
         elif '-' in name:
             name = name.split('-', 1)[1]
         name = name.replace(' ', '')
+        name = name.replace('_', '')
         if name in glosses:
             stripped.append(f)
     os.makedirs(newFolder, exist_ok=True)
