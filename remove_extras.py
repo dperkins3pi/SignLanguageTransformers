@@ -1,4 +1,3 @@
-#Usage: python remove_extras.py <videosFilepath> <jointPath> <trainPath> <valPath> <testPath> [newName] [numGlosses]
 import pandas as pd
 import numpy as np
 import os
@@ -14,7 +13,8 @@ def get_most_common(data, column, number):
         column (str): the column to get the values from
         number (int): the number of most common values to get
     """
-    return data[column].value_counts().head(number).index
+    glosses = (train['Gloss'].value_counts().sort_index().sort_values(ascending=False, kind='stable').head(100).index)
+    return glosses
 
 
 def remove_excess_folders(folderPath, glosses, newFolder, segmented = False):
@@ -33,12 +33,13 @@ def remove_excess_folders(folderPath, glosses, newFolder, segmented = False):
     filenames = os.listdir(folder_path)
     stripped  = []
     #checks each file to see if it is one of the given glosses and adds the filename to stripped 
-    for f in filenames:
+    for  f in filenames:
         name = os.path.splitext(f)[0]
         if segmented:
             name = name.split('-', 2)[2]
         elif '-' in name:
             name = name.split('-', 1)[1]
+        name = name.replace(' ', '')
         if name in glosses:
             stripped.append(f)
     os.makedirs(newFolder, exist_ok=True)
