@@ -51,6 +51,8 @@ def remove_excess_folders(folderPath, glosses, newFolder, segmented = False):
             name = name.split('-', 1)[1]
         name = name.replace(' ', '')
         name = name.replace('_', '')
+        if name.startswith("seed"):
+            name = name[4:]
         if name in glosses:
             stripped.append(f)
     os.makedirs(newFolder, exist_ok=True)
@@ -102,11 +104,8 @@ def remove_excess(videosFilepath, jointPath, trainFilepath, valFilepath, testFil
     glossesEdited = []
     for g in glosses:
         g = g.replace('/', '-')
-        if g[-1].isdigit():
-            if g[-1] == "1":
+        if g[-1] == "1"  and g != "CHEW1":
                 glossesEdited.append(g[:-1])
-            else:
-                glossesEdited.append(g[:-1] + " " + g[-1])
         else:
             glossesEdited.append(g)
         
