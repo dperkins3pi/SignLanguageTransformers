@@ -259,6 +259,7 @@ class Trainer():   # Class used for creating the model and training it
             "use_segmented_videos": self.use_segmented_videos,
             "use_coordinates": self.use_coordinates,
             "use_lstm": self.use_lstm,
+            "use_attention": self.use_attention,
             "bidirectional": self.bidirectional,
             "feature_dim": self.feature_dim,
             "dropout": self.dropout,
