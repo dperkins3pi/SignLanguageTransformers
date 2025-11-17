@@ -35,10 +35,11 @@ USE_COORDINATES = True
 USE_LSTM = True
 USE_ATTENTION = False
 BIDIRECTIONAL = True
+DROPOUT = 0.2
 
 
 class TransformerKeyPointModel(nn.Module):
-    def __init__(self, num_classes=10, num_frames=54, keypoint_dim=237, nhead=8, feature_dim=FEATURE_DIM, vision_model=VISION_MODEL, use_original_videos=USE_ORIGINAL_VIDEOS, use_segmented_videos=USE_SEGMENTED_VIDEOS, use_coordinates=USE_COORDINATES, use_attention=USE_ATTENTION, use_lstm=True, num_lstm_layers=2, batch_first=True, bidirectional=BIDIRECTIONAL):
+    def __init__(self, num_classes=10, num_frames=54, keypoint_dim=237, nhead=8, feature_dim=FEATURE_DIM, vision_model=VISION_MODEL, use_original_videos=USE_ORIGINAL_VIDEOS, use_segmented_videos=USE_SEGMENTED_VIDEOS, use_coordinates=USE_COORDINATES, use_attention=USE_ATTENTION, use_lstm=True, num_lstm_layers=2, batch_first=True, bidirectional=BIDIRECTIONAL, dropout=DROPOUT):
         super().__init__()
 
         self.use_original_videos = use_original_videos
@@ -49,6 +50,7 @@ class TransformerKeyPointModel(nn.Module):
         self.feature_dim = feature_dim
         self.use_attention = use_attention
         self.bidirectional = bidirectional
+        self.dropout = nn.Dropout(p=dropout)
 
         if "resnet" in vision_model.lower():
 
@@ -99,7 +101,7 @@ class TransformerKeyPointModel(nn.Module):
         if self.use_coordinates:
             self.keypoint_dim = keypoint_dim
             if self.use_attention: self.attn = nn.MultiheadAttention(embed_dim=3, num_heads=1, batch_first=True)
-            self.joint_model = nn.Sequential(nn.Linear(keypoint_dim, self.feature_dim), nn.GELU())
+            self.joint_model = nn.Sequential(nn.Linear(keypoint_dim, self.feature_dim), self.dropout, nn.GELU())
 
         # Transformer on the combined features
         # if self.use_original_videos: self.temporal_model = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=self.feature_dim*3, nhead=nhead, batch_first=True),num_layers=2)
@@ -109,8 +111,8 @@ class TransformerKeyPointModel(nn.Module):
         else: self.temporal_model = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=input_dim, nhead=nhead, batch_first=True), num_layers=2)
 
         # Head for classification
-        if self.use_lstm and self.bidirectional: self.head = nn.Sequential(nn.Linear(input_dim*2, num_classes*2), nn.GELU(), nn.Linear(num_classes*2, num_classes))
-        else: self.head = nn.Sequential(nn.Linear(input_dim, num_classes*2), nn.GELU(), nn.Linear(num_classes*2, num_classes))
+        if self.use_lstm and self.bidirectional: self.head = nn.Sequential(nn.Linear(input_dim*2, num_classes*2), self.dropout, nn.GELU(), nn.Linear(num_classes*2, num_classes))
+        else: self.head = nn.Sequential(nn.Linear(input_dim, num_classes*2), self.dropout, nn.GELU(), nn.Linear(num_classes*2, num_classes))
 
     def forward(self, videos, segmented_videos, joints, mask=None): 
         """
@@ -129,6 +131,7 @@ class TransformerKeyPointModel(nn.Module):
             frames = frames.view(B * T, 3, H, W)                 # (B*T, 3, H, W)
             features = self.vision_model1(frames)['features'].flatten(1)  # (B*T, feature_dim)
             features = self.resnet_projection(features)
+            features = self.dropout(features)
             video_features = features.view(B, T, -1)
             # video_features = []   # Use these lines if the above causes a memory issue
             # for t in range(T):   # Apply ViT to each
@@ -142,6 +145,7 @@ class TransformerKeyPointModel(nn.Module):
             frames = segmented_videos.view(B * T, 1, H, W)  # Combine batch and time, add single channel
             features = self.vision_model2(frames)['features'].flatten(1)  # (B*T, feature_dim)
             features = self.resnet_projection(features)
+            features = self.dropout(features)
             segmented_features = features.view(B, T, -1)  # Reshape back to (B, T, feature_dim)
             # segmented_features = []   # Use these lines if the above causes a memory issue
             # for t in range(T):   # Apply ViT to each
@@ -188,7 +192,7 @@ class TransformerKeyPointModel(nn.Module):
     
 class Trainer():   # Class used for creating the model and training it
     def __init__(self, train_loader, val_loader, test_loader, label_to_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LEARNING_RATE, optimizer=OPTIMIZER, weight_decay=WEIGHT_DECAY, feature_dim=FEATURE_DIM,\
-        results_dir=RESULTS_DIR, save_output=True, stride=None, pretrained_weights_path=None, use_original_videos=USE_ORIGINAL_VIDEOS, use_segmented_videos=USE_SEGMENTED_VIDEOS, use_coordinates=USE_COORDINATES, use_attention=USE_ATTENTION, use_lstm=USE_LSTM, bidirectional=BIDIRECTIONAL):
+        results_dir=RESULTS_DIR, save_output=True, stride=None, pretrained_weights_path=None, use_original_videos=USE_ORIGINAL_VIDEOS, use_segmented_videos=USE_SEGMENTED_VIDEOS, use_coordinates=USE_COORDINATES, use_attention=USE_ATTENTION, use_lstm=USE_LSTM, bidirectional=BIDIRECTIONAL, dropout=DROPOUT):
         """Load in the data, create the model, and make directories to store future plots
         
         Args:
@@ -217,6 +221,7 @@ class Trainer():   # Class used for creating the model and training it
         self.use_coordinates = use_coordinates
         self.use_attention = use_attention
         self.bidirectional = bidirectional
+        self.dropout = dropout
         self.num_classes = max(2, len(label_to_idx) if label_to_idx else 2)
         # Store hyperparameters
         self.epochs, self.batchsize, self.lr, self.weight_decay = epochs, batch_size, lr, weight_decay
@@ -224,7 +229,7 @@ class Trainer():   # Class used for creating the model and training it
         if torch.cuda.is_available(): self.device = torch.device("cuda")
         elif torch.backends.mps.is_available(): self.device = torch.device("mps")
         else: self.device = torch.device("cpu")
-        self.model = TransformerKeyPointModel(num_frames=16, num_classes=self.num_classes, use_lstm=use_lstm, feature_dim=self.feature_dim, use_original_videos=self.use_original_videos, use_segmented_videos=self.use_segmented_videos, use_coordinates=self.use_coordinates, use_attention=self.use_attention, bidirectional=self.bidirectional).to(self.device)
+        self.model = TransformerKeyPointModel(num_frames=16, num_classes=self.num_classes, use_lstm=use_lstm, feature_dim=self.feature_dim, use_original_videos=self.use_original_videos, use_segmented_videos=self.use_segmented_videos, use_coordinates=self.use_coordinates, use_attention=self.use_attention, bidirectional=self.bidirectional, dropout=self.dropout).to(self.device)
         if pretrained_weights_path is not None: self.model.load_state_dict(torch.load(pretrained_weights_path, map_location=self.device))
         if optimizer.lower()=="sgd": self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         elif optimizer.lower()=="adamw": self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -256,6 +261,7 @@ class Trainer():   # Class used for creating the model and training it
             "use_lstm": self.use_lstm,
             "bidirectional": self.bidirectional,
             "feature_dim": self.feature_dim,
+            "dropout": self.dropout,
             "num_classes": self.num_classes
         }
         print(f"The hyperparameters are {hyperparams} and will be stored at {self.save_model_path}config.yaml")
