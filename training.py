@@ -32,10 +32,34 @@ VISION_MODEL = "ResNet18"
 USE_ORIGINAL_VIDEOS = False   # If False, only use segmented videos
 USE_SEGMENTED_VIDEOS = False
 USE_COORDINATES = True
-USE_LSTM = True
+USE_LSTM = False
 USE_ATTENTION = False
 BIDIRECTIONAL = True
 DROPOUT = 0.2
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=500):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Create a matrix of [max_len, d_model] representing positional information
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+
+        # Apply sine to even indices and cosine to odd indices
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Add a batch dimension: [1, max_len, d_model]
+        self.register_buffer('pe', pe.unsqueeze(0))
+
+    def forward(self, x):
+        # x shape: [batch_size, seq_len, d_model]
+        # Add position encoding to the input embedding
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
 
 
 class TransformerKeyPointModel(nn.Module):
@@ -108,7 +132,9 @@ class TransformerKeyPointModel(nn.Module):
         # else: self.temporal_model = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=self.feature_dim*2, nhead=nhead, batch_first=True),num_layers=2)
         input_dim = self.feature_dim * (int(self.use_original_videos) + int(self.use_segmented_videos) + int(self.use_coordinates))
         if self.use_lstm: self.temporal_model = nn.LSTM(input_size=input_dim, hidden_size=self.feature_dim, num_layers=num_lstm_layers, batch_first=True, bidirectional=bidirectional)
-        else: self.temporal_model = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=input_dim, nhead=nhead, batch_first=True), num_layers=2)
+        else: 
+            self.pos_encoder = PositionalEncoding(input_dim, dropout)
+            self.temporal_model = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=input_dim, nhead=nhead, batch_first=True), num_layers=2)
 
         # Head for classification
         if self.use_lstm and self.bidirectional: self.head = nn.Sequential(nn.Linear(input_dim*2, num_classes*2), self.dropout, nn.GELU(), nn.Linear(num_classes*2, num_classes))
@@ -183,7 +209,9 @@ class TransformerKeyPointModel(nn.Module):
             else: all_features = joint_features
 
         if self.use_lstm: out, _ = self.temporal_model(all_features)
-        else: out = self.temporal_model(all_features)
+        else: 
+            all_features = self.pos_encoder(all_features)
+            out = self.temporal_model(all_features)
         pooled = out.mean(dim=1)
         logits = self.head(pooled)
 
