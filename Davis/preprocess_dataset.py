@@ -8,14 +8,14 @@ from multiprocessing import Pool, cpu_count
 from functools import partial
 
 # -1 for all videos (test first with 100 videos)
-MAX_VIDEOS_TO_PROCESS = 100
+MAX_VIDEOS_TO_PROCESS = 1
 NUM_CORES = cpu_count()
 
 # --- File Paths ---
 # MUST BE ABSOLUTE PATHS FOR MULTIPROCESSING
 video_path = "/Users/davishunter/Downloads/SignEase/ASL_Citizen/videos"
-segmented_folder = "/Users/davishunter/Downloads/SignEase/ASL_Citizen/segmented-videos"
-csv_folder = "/Users/davishunter/Downloads/SignEase/ASL_Citizen/joint_data"
+segmented_folder = "/Users/davishunter/Documents/git_repos/SignLanguageTransformers"
+csv_folder = "/Users/davishunter/Documents/git_repos/SignLanguageTransformers"
 os.makedirs(segmented_folder, exist_ok=True)
 os.makedirs(csv_folder, exist_ok=True)
 
