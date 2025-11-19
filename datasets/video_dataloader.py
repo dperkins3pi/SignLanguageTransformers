@@ -96,9 +96,9 @@ def get_data_loaders(
     val_csv = os.path.join(splits_dir, "val.csv")
     test_csv = os.path.join(splits_dir, "test.csv")
 
-    train_ds = VideoDataset.from_split_csv(train_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos)
-    val_ds = VideoDataset.from_split_csv(val_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos)
-    test_ds = VideoDataset.from_split_csv(test_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos)
+    train_ds = VideoDataset.from_split_csv(train_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos, training=True)
+    val_ds = VideoDataset.from_split_csv(val_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos, training=False)
+    test_ds = VideoDataset.from_split_csv(test_csv, videos_dir, segmented_dir, joint_dir, num_frames=num_frames, return_mask=return_mask, pad_mode=pad_mode, stride=stride, use_original_videos=use_original_videos, training=False)
 
     # build label->idx
     label_to_idx = None

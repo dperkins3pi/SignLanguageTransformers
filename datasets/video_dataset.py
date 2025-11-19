@@ -28,6 +28,7 @@ class VideoDataset(Dataset):
         frame_size: Optional[tuple[int, int]] = (224, 224),
         stride: int=1,
         use_original_videos: bool = True,
+        training: bool = False
     ):
         """Initialize VideoDataset.
 
@@ -40,6 +41,7 @@ class VideoDataset(Dataset):
                 - "repeat": repeat last frame
             return_mask: if True, __getitem__ will return a mask (1=real frame, 0=padded).
             labels: optional list of labels aligned with `files`.
+            training: Whether or not this is used for training
         """
         self.video_files = video_files
         self.segmented_files = segmented_files
@@ -47,6 +49,7 @@ class VideoDataset(Dataset):
         self.num_frames = num_frames
         self.transform = transform
         self.use_original_videos = use_original_videos
+        self.training = training
         assert pad_mode in ("repeat", "zero"), "pad_mode must be 'repeat' or 'zero'"
         self.pad_mode = pad_mode
         self.return_mask = return_mask
@@ -54,6 +57,7 @@ class VideoDataset(Dataset):
         # frame_size is (H, W) to which frames will be resized using cv2.resize
         self.frame_size = frame_size
         self.stride = stride
+        self.num_joints = 79
 
     def __len__(self):
         return len(self.video_files)
@@ -83,7 +87,40 @@ class VideoDataset(Dataset):
             next(reader)  # Skip the header row
             for row in reader:
                 rows.append([float(x) for x in row])  # convert all to float
-        return np.array(rows)  # shape: (num_frames, num_features)
+
+        # Normalize the coordinates
+        normalized_sequence = []
+        pose_sequence = np.array(rows)
+        for frame_data in pose_sequence:
+            # Reshape to (79 joints, 3 coords)
+            if frame_data.shape[0] == 238: frame_data = frame_data[1:]   # Error in reading in files --> remove first entry, which is just the frame number
+            joints = frame_data.reshape(self.num_joints, 3)
+
+            # 1. Center: Calculate Center of Mass of ALL joints for THIS frame
+            center_of_mass = np.mean(joints, axis=0)
+            centered_joints = joints - center_of_mass
+
+            # 2. Scale: Calculate Max Deviation for THIS frame
+            max_val = np.max(np.abs(centered_joints))
+            if max_val > 0: scaled_joints = centered_joints / max_val
+            else: scaled_joints = centered_joints
+
+            # Flatten back to (237,)
+            normalized_frame = scaled_joints.flatten()
+            normalized_sequence.append(normalized_frame)
+
+        # Re-stack the normalized frames
+        pose_sequence = np.stack(normalized_sequence)
+
+        # Augment it if it is in the training set
+        if self.training:
+            noise = np.random.normal(0, 0.005, pose_sequence.shape)
+            pose_sequence = pose_sequence + noise
+            # --- Scaling ---
+            scale_factor = np.random.uniform(0.95, 1.05)
+            pose_sequence = pose_sequence * scale_factor
+        
+        return pose_sequence # shape: (num_frames, num_features)
 
     def _sample_frames(self, frames: np.ndarray) -> np.ndarray:
         # frames shape: (T_full, H, W, C)
@@ -126,7 +163,6 @@ class VideoDataset(Dataset):
         joints = self._read_coordinates(joint_path)
         joints = joints[::self.stride]   
         frame_numbers = joints[:,0].astype(int)
-        joints = joints[:, 1:]   # Remove the frame number
         if self.use_original_videos: frames = self._read_video(video_path, frame_numbers, gray=False)
         segmented_frames = self._read_video(segmented_path, None)   # Set frame_numbers to None for segmented
 
@@ -166,6 +202,7 @@ class VideoDataset(Dataset):
         pad_mode: str = "zero",
         return_mask: bool = False,
         use_original_videos: bool = True,
+        training=False
     ) -> "VideoDataset":
         """Create a VideoDataset from a split CSV (Participant ID,Video file,Gloss,...).
 
@@ -222,10 +259,10 @@ class VideoDataset(Dataset):
             if missing:
                 for f in missing: print(f"Warning: file has no label (empty Gloss) in CSV: {f}")
 
-            return cls(existing_files, existing_segmented_files, existing_joint_files, num_frames, transform, pad_mode=pad_mode, return_mask=return_mask, labels=existing_labels, frame_size=frame_size, stride=stride, use_original_videos=use_original_videos)
+            return cls(existing_files, existing_segmented_files, existing_joint_files, num_frames, transform, pad_mode=pad_mode, return_mask=return_mask, labels=existing_labels, frame_size=frame_size, stride=stride, use_original_videos=use_original_videos, training=training)
         # if labels were provided but didn't align, warn about files with no label
         if labels and len(existing_labels) != len(existing_files):
             print("Warning: Some files referenced in CSV were missing on disk; labels may not align exactly.")
         
-        return cls(existing_files, existing_segmented_files, existing_joint_files, num_frames, transform, pad_mode=pad_mode, return_mask=return_mask, frame_size=frame_size, stride=stride, use_original_videos=use_original_videos)
+        return cls(existing_files, existing_segmented_files, existing_joint_files, num_frames, transform, pad_mode=pad_mode, return_mask=return_mask, frame_size=frame_size, stride=stride, use_original_videos=use_original_videos, training=training)
 
