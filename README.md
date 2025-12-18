@@ -2,7 +2,7 @@
 
 The recent surge in large language models has automated translations of spoken and written languages. However, these advances remain largely inaccessible to American Sign Language (ASL) users, whose language relies on complex visual cues. Isolated sign language recognition (ISLR)—the task of classifying videos of individual signs—can help bridge this gap, but is currently limited by scarce per-sign data, high signer variability, and substantial computational costs. We propose a model for ISLR that reduces computational requirements while maintaining robustness to signer variation. Our approach integrates (i) a pose estimation pipeline to extract hand and face joint coordinates, (ii) a segmentation module that isolates relevant information, and (iii) a ResNet–Transformer backbone to jointly model spatial and temporal dependencies.
 
-Our paper can be found at https://arxiv.org/pdf/2512.14876 or [`paper.pdf`](paper.pdf)
+Our paper can be found at https://arxiv.org/pdf/2512.14876 or [`Paper.pdf`](Paper.pdf)
 
 # Dataset
 
