@@ -1,3 +1,9 @@
+# Abstract
+
+The recent surge in large language models has automated translations of spoken and written languages. However, these advances remain largely inaccessible to American Sign Language (ASL) users, whose language relies on complex visual cues. Isolated sign language recognition (ISLR)—the task of classifying videos of individual signs—can help bridge this gap, but is currently limited by scarce per-sign data, high signer variability, and substantial computational costs. We propose a model for ISLR that reduces computational requirements while maintaining robustness to signer variation. Our approach integrates (i) a pose estimation pipeline to extract hand and face joint coordinates, (ii) a segmentation module that isolates relevant information, and (iii) a ResNet–Transformer backbone to jointly model spatial and temporal dependencies.
+
+Our paper can be found at https://arxiv.org/pdf/2512.14876
+
 # Dataset
 
 ASL Citizen: https://www.microsoft.com/en-us/research/project/asl-citizen/dataset-description/
@@ -5,9 +11,12 @@ ASL Citizen: https://www.microsoft.com/en-us/research/project/asl-citizen/datase
 To load in the data into dataloaders, run the script
 * train_loader, val_loader, test_loader, label_to_idx = get_data_loaders(VIDEO_DIR, SPLIT_DIR, batch_size=BATCH_SIZE)
 
-
-To use remove_extras to keep only the n most common glosses use the command line:
+To use remove_extras and keep only the n most common glosses use the command line:
 `python remove_extras.py <videosFilepath> <jointPath> <trainPath> <valPath> <testPath> [newName] [numGlosses]`
+
+# Training
+
+Training can be done on the HPC with the `train.py` script. If the system uses slurm, submit the job with `sbatch train.sh` (after defining the desired computational resources).
 
 # Project Setup & Quickstart (with `uv`)
 
